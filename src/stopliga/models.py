@@ -33,6 +33,8 @@ class Config:
     unifi_ca_file: Path | None = None
     feed_verify_tls: bool = True
     feed_ca_file: Path | None = None
+    feed_allow_private_hosts: bool = False
+    strict_feed_consistency: bool = True
     request_timeout: float = 15.0
     retries: int = 4
     interval_seconds: int = 300
@@ -41,6 +43,7 @@ class Config:
     max_destinations: int = 2048
     state_file: Path = Path("/data/state.json")
     lock_file: Path = Path("/data/stopliga.lock")
+    bootstrap_guard_file: Path = Path("/data/bootstrap_guard.json")
     health_max_age_seconds: int | None = None
     log_level: str = "INFO"
     vpn_name: str | None = None

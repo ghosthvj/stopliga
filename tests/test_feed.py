@@ -135,6 +135,39 @@ class FeedLoadingTests(unittest.TestCase):
             ],
         )
 
+    def test_load_feed_snapshot_can_degrade_when_revision_resolution_fails(self) -> None:
+        config = Config(
+            status_url="https://raw.githubusercontent.com/example/repo/main/status.json",
+            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            retries=1,
+            strict_feed_consistency=False,
+        )
+        calls: list[str] = []
+        responses = {
+            "https://raw.githubusercontent.com/example/repo/main/status.json": '{"isBlocked": false}',
+            "https://raw.githubusercontent.com/example/repo/main/ip_list.txt": "192.0.2.1\n",
+        }
+
+        def fake_fetch(url: str, **_: object) -> str:
+            calls.append(url)
+            if url.startswith("https://api.github.com/"):
+                raise InvalidFeedError("github api unavailable")
+            return responses[url]
+
+        with patch("stopliga.feed.fetch_text", side_effect=fake_fetch):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertFalse(snapshot.is_blocked)
+        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(
+            calls,
+            [
+                "https://api.github.com/repos/example/repo/commits/main",
+                "https://raw.githubusercontent.com/example/repo/main/status.json",
+                "https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            ],
+        )
+
 
 class RoutePayloadTests(unittest.TestCase):
     def test_build_ip_objects_preserves_version_field_for_mixed_ipv4_ipv6(self) -> None:

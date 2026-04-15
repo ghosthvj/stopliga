@@ -32,6 +32,7 @@ class StopLigaService:
         self.config = config
         self.logger = logging.getLogger("stopliga.service")
         self.state_store = StateStore(config.state_file)
+        self.bootstrap_guard_store = StateStore(config.bootstrap_guard_file)
 
     def _load_runtime_state(self) -> dict[str, object]:
         try:
@@ -54,6 +55,60 @@ class StopLigaService:
         except StateError as exc:
             log_event(self.logger, logging.WARNING, "state_load_failed", error=exc)
             return {}
+
+    def _load_bootstrap_guard(self) -> dict[str, object]:
+        try:
+            guard = self.bootstrap_guard_store.load()
+        except ConfigError as exc:
+            try:
+                bad_path = self.bootstrap_guard_store.quarantine_invalid_file()
+            except StateError as quarantine_exc:
+                log_event(self.logger, logging.WARNING, "bootstrap_guard_quarantine_failed", error=quarantine_exc, original_error=exc)
+            else:
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "bootstrap_guard_quarantined",
+                    path=self.config.bootstrap_guard_file,
+                    quarantined_to=bad_path,
+                    error=exc,
+                )
+            return {}
+        except StateError as exc:
+            log_event(self.logger, logging.WARNING, "bootstrap_guard_load_failed", error=exc)
+            return {}
+        if guard:
+            return guard
+        legacy = self._load_runtime_state()
+        if any(
+            legacy.get(key)
+            for key in ("bootstrap_source", "bootstrap_network_id", "bootstrap_target_macs")
+        ):
+            return legacy
+        return {}
+
+    def _write_bootstrap_guard(self, result: SyncResult) -> None:
+        snapshot = StateSnapshot(
+            status="guard",
+            run_mode=self.config.run_mode,
+            route_name=self.config.route_name,
+            site=self.config.site,
+            last_attempt_at=utcnow_iso(),
+            last_success_at=None,
+            last_error=None,
+            last_mode=None,
+            last_route_id=None,
+            last_backend=None,
+            feed_hash=None,
+            destinations_hash=None,
+            changed=False,
+            created=False,
+            dry_run=False,
+            bootstrap_source=result.bootstrap_source,
+            bootstrap_network_id=result.bootstrap_network_id,
+            bootstrap_target_macs=result.bootstrap_target_macs,
+        )
+        self.bootstrap_guard_store.write(snapshot)
 
     def _write_state(
         self,
@@ -242,7 +297,7 @@ class StopLigaService:
         client.login()
         site_context = client.resolve_site_context()
         created = False
-        previous_state = self._load_runtime_state()
+        previous_guard = self._load_bootstrap_guard()
         bootstrap_source: str | None = None
         bootstrap_network_id: str | None = None
         bootstrap_target_macs: tuple[str, ...] = ()
@@ -286,7 +341,7 @@ class StopLigaService:
                 )
             applied_preview = preview
             try:
-                bootstrap_backend.create_route(preview.payload)
+                route_record = bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
                 if preview.source == "auto-bootstrap":
                     target_device = client.pick_default_target_device()
@@ -301,7 +356,7 @@ class StopLigaService:
                         reason="all_clients_target_rejected",
                     )
                     try:
-                        bootstrap_backend.create_route(fallback_payload)
+                        route_record = bootstrap_backend.create_route(fallback_payload)
                     except StopLigaError as fallback_exc:
                         raise RouteNotFoundError(
                             f"Route {self.config.route_name!r} not found and bootstrap failed. "
@@ -320,14 +375,15 @@ class StopLigaService:
             bootstrap_source = applied_preview.source
             bootstrap_network_id = str(applied_preview.payload.get("network_id") or "") or None
             bootstrap_target_macs = self._route_target_macs(applied_preview.payload)
-            backend, endpoint, route_record = choose_existing_route_backend(client, site_context, self.config.route_name)
+            backend = bootstrap_backend
+            endpoint, _ = backend.list_routes()
 
         return self._plan_route_update(
             backend=backend,
             endpoint=endpoint,
             route_record=route_record,
             feed_snapshot=feed_snapshot,
-            previous_state=previous_state,
+            previous_state=previous_guard,
             created=created,
             bootstrap_source=bootstrap_source,
             bootstrap_network_id=bootstrap_network_id,
@@ -349,6 +405,7 @@ class StopLigaService:
             feed_snapshot = load_feed_snapshot(self.config)
             result = self._run_once(feed_snapshot)
             self._write_state(status="dry_run" if result.dry_run else "success", result=result)
+            self._write_bootstrap_guard(result)
             log_event(
                 self.logger,
                 logging.INFO,

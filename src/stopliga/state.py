@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import tempfile
 from dataclasses import asdict
@@ -67,7 +68,13 @@ class FileLock:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.release()
+        try:
+            self.release()
+        except StateError:
+            if exc_type is not None:
+                logging.getLogger("stopliga.state").exception("lock_release_failed", exc_info=True)
+                return
+            raise
 
 
 class StateStore:

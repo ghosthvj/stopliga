@@ -8,9 +8,15 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      STOPLIGA_UID: ${STOPLIGA_UID:-1000}
+      STOPLIGA_GID: ${STOPLIGA_GID:-1000}
+      UNIFI_API_KEY_FILE: /run/secrets/unifi_api_key
+      UNIFI_PASSWORD_FILE: /run/secrets/unifi_password
     command: ["--loop"]
     volumes:
       - ./data:/data
+      - ./secrets:/run/secrets:ro
     read_only: true
     tmpfs:
       - /tmp

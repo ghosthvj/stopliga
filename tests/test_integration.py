@@ -324,6 +324,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             "retries": 2,
             "state_file": Path(state_dir) / "state.json",
             "lock_file": Path(state_dir) / "stopliga.lock",
+            "bootstrap_guard_file": Path(state_dir) / "bootstrap_guard.json",
             "status_url": "http://invalid/feed/status.json",
             "ip_list_url": "http://invalid/feed/ip_list.txt",
         }
@@ -616,6 +617,45 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertTrue(result.changed)
             quarantined = list(Path(tmpdir).glob("state.json.bad-*"))
             self.assertEqual(len(quarantined), 1)
+
+    def test_corrupt_runtime_state_does_not_drop_bootstrap_guard(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"type": "ALL_CLIENTS"}],
+                "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text("{this-is-not-json", encoding="utf-8")
+            guard_path = Path(tmpdir) / "bootstrap_guard.json"
+            guard_path.write_text(
+                json.dumps(
+                    {
+                        "status": "guard",
+                        "bootstrap_source": "auto-bootstrap",
+                        "bootstrap_network_id": "vpn-network-1",
+                        "bootstrap_target_macs": ["__all_clients__"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                bootstrap_guard_file=guard_path,
+            )
+            result = StopLigaService(config).run_once()
+            self.assertTrue(result.changed)
+            self.assertFalse(state.route["enabled"])
 
     def test_linked_list_rejects_wrong_ip_family(self) -> None:
         state = FakeState(

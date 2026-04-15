@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
@@ -105,28 +105,54 @@ def fetch_text(
     context = make_ssl_context(verify=verify_tls, ca_file=ca_file)
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
     last_error: Exception | None = None
+    safe_url = _safe_log_url(url)
 
     for attempt in range(1, max(1, retries) + 1):
         request = urllib.request.Request(url, headers={"Accept": "application/json, text/plain;q=0.9, */*;q=0.1"})
         try:
             with opener.open(request, timeout=timeout) as response:
                 return response.read().decode("utf-8", errors="replace")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            retryable_http = exc.code in {408, 429, 500, 502, 503, 504}
+            if retryable_http and attempt < retries:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "feed_retry",
+                    url=safe_url,
+                    attempt=attempt,
+                    retries=retries,
+                    status=exc.code,
+                    error=exc,
+                )
+                sleep_with_backoff(attempt)
+                continue
+            raise NetworkError(f"Unable to fetch {safe_url}: HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
             last_error = exc
             if attempt < retries:
                 log_event(
                     logger,
                     logging.WARNING,
                     "feed_retry",
-                    url=url,
+                    url=safe_url,
                     attempt=attempt,
                     retries=retries,
                     error=exc,
                 )
                 sleep_with_backoff(attempt)
                 continue
-            raise NetworkError(f"Unable to fetch {url}: {exc}") from exc
-    raise NetworkError(f"Unable to fetch {url}: {last_error}")
+            raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
+    raise NetworkError(f"Unable to fetch {safe_url}: {last_error}")
+
+
+def _safe_log_url(url: str) -> str:
+    parsed = urlparse(url)
+    redacted_netloc = parsed.hostname or ""
+    if parsed.port:
+        redacted_netloc = f"{redacted_netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, redacted_netloc, parsed.path, "", "", ""))
 
 
 def _parse_github_raw_file(url: str) -> GitHubRawFile | None:
@@ -183,15 +209,29 @@ def _resolve_consistent_feed_urls(config: Config) -> tuple[str, str, str | None]
     if (status_ref.owner, status_ref.repo, status_ref.ref) != (ip_ref.owner, ip_ref.repo, ip_ref.ref):
         return config.status_url, config.ip_list_url, None
 
-    sha = _resolve_github_commit_sha(
-        status_ref.owner,
-        status_ref.repo,
-        status_ref.ref,
-        timeout=config.request_timeout,
-        retries=config.retries,
-        verify_tls=config.feed_verify_tls,
-        ca_file=config.feed_ca_file,
-    )
+    try:
+        sha = _resolve_github_commit_sha(
+            status_ref.owner,
+            status_ref.repo,
+            status_ref.ref,
+            timeout=config.request_timeout,
+            retries=config.retries,
+            verify_tls=config.feed_verify_tls,
+            ca_file=config.feed_ca_file,
+        )
+    except (InvalidFeedError, NetworkError) as exc:
+        if config.strict_feed_consistency:
+            raise
+        log_event(
+            logging.getLogger("stopliga.feed"),
+            logging.WARNING,
+            "feed_revision_resolution_degraded",
+            owner=status_ref.owner,
+            repo=status_ref.repo,
+            ref=status_ref.ref,
+            error=exc,
+        )
+        return config.status_url, config.ip_list_url, None
     return status_ref.resolved_url(sha), ip_ref.resolved_url(sha), sha
 
 

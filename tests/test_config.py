@@ -82,3 +82,69 @@ site = "default"
                     "STOPLIGA_VPN_NAME": "Mullvad DE",
                 },
             )
+
+    def test_private_feed_hosts_are_rejected_by_default(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_STATUS_URL": "https://10.0.0.3/feed/status.json",
+                    "STOPLIGA_IP_LIST_URL": "https://10.0.0.3/feed/ip_list.txt",
+                },
+            )
+
+    def test_loopback_http_feed_urls_are_allowed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_STATUS_URL": "http://127.0.0.1/status.json",
+                "STOPLIGA_IP_LIST_URL": "http://localhost/ip_list.txt",
+            },
+        )
+        self.assertEqual(config.status_url, "http://127.0.0.1/status.json")
+        self.assertEqual(config.ip_list_url, "http://localhost/ip_list.txt")
+
+    def test_secret_files_can_provide_unifi_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            api_key_file = Path(tmpdir) / "api_key"
+            password_file = Path(tmpdir) / "password"
+            api_key_file.write_text("secret-api-key\n", encoding="utf-8")
+            password_file.write_text("secret-password\n", encoding="utf-8")
+            parser = build_parser()
+            args = parser.parse_args([])
+            config = load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_USERNAME": "env-user",
+                    "UNIFI_API_KEY_FILE": str(api_key_file),
+                    "UNIFI_PASSWORD_FILE": str(password_file),
+                },
+            )
+            self.assertEqual(config.api_key, "secret-api-key")
+            self.assertEqual(config.username, "env-user")
+            self.assertEqual(config.password, "secret-password")
+
+    def test_direct_secret_and_secret_file_conflict_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            api_key_file = Path(tmpdir) / "api_key"
+            api_key_file.write_text("secret-api-key\n", encoding="utf-8")
+            parser = build_parser()
+            args = parser.parse_args([])
+            with self.assertRaises(ConfigError):
+                load_config(
+                    args,
+                    {
+                        "UNIFI_HOST": "10.0.0.2",
+                        "UNIFI_API_KEY": "env-api-key",
+                        "UNIFI_API_KEY_FILE": str(api_key_file),
+                    },
+                )

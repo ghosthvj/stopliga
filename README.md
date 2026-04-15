@@ -52,8 +52,10 @@ Con esas dos, si la route no existe, StopLiga puede crearla ya asociada a una VP
 |---|---|---:|---|
 | `UNIFI_HOST` | Sí | - | IP o hostname local del router/controlador |
 | `UNIFI_API_KEY` | No | - | API key local de UniFi |
+| `UNIFI_API_KEY_FILE` | No | - | Fichero con la API key local |
 | `UNIFI_USERNAME` | No | - | Usuario para login local |
 | `UNIFI_PASSWORD` | No | - | Contraseña para login local |
+| `UNIFI_PASSWORD_FILE` | No | - | Fichero con la contraseña local |
 | `UNIFI_SITE` | No | `default` | Site de UniFi |
 | `UNIFI_VERIFY_TLS` | No | `true` | Verifica el certificado TLS |
 | `UNIFI_CA_FILE` | No | - | CA propia para TLS |
@@ -63,6 +65,7 @@ Con esas dos, si la route no existe, StopLiga puede crearla ya asociada a una VP
 | `STOPLIGA_LOG_LEVEL` | No | `INFO` | Nivel de log |
 | `STOPLIGA_DRY_RUN` | No | `false` | No escribe en UniFi |
 | `STOPLIGA_STATE_FILE` | No | `/data/state.json` | Fichero de estado |
+| `STOPLIGA_BOOTSTRAP_GUARD_FILE` | No | `/data/bootstrap_guard.json` | Guarda el marcador de bootstrap provisional |
 | `STOPLIGA_LOCK_FILE` | No | `/data/stopliga.lock` | Lock local |
 | `STOPLIGA_VPN_NAME` | No | - | VPN cliente para autocreación completa |
 | `STOPLIGA_TARGETS` | No | - | Equipos separados por comas para autocreación completa |
@@ -81,10 +84,14 @@ Variables avanzadas:
 - `STOPLIGA_DUMP_PAYLOADS_ON_ERROR`
 - `STOPLIGA_FEED_VERIFY_TLS`
 - `STOPLIGA_FEED_CA_FILE`
+- `STOPLIGA_FEED_ALLOW_PRIVATE_HOSTS`
+- `STOPLIGA_STRICT_FEED_CONSISTENCY`
 
 ## Autenticación
 
 StopLiga usa la API local del router. La autenticación puede hacerse con API key o con usuario y contraseña.
+
+También admite `*_FILE` para cargar secretos desde ficheros montados, por ejemplo `UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key`.
 
 Prioridad recomendada:
 
@@ -98,9 +105,11 @@ UniFi documenta que, si ya tienes Remote Management configurado, puedes usar la 
 - TLS se verifica por defecto.
 - Mejor opción: `UNIFI_CA_FILE`.
 - Opción temporal en laboratorio: `UNIFI_VERIFY_TLS=false`.
+- Los feeds remotos se validan y, por defecto, rechazan hosts privados/locales y URLs con credenciales embebidas.
 - El contenedor corre como usuario no root.
+- En Docker, el entrypoint prepara `/data` como root y baja enseguida al `uid/gid` configurado para evitar problemas típicos de permisos con bind mounts en Linux.
 - Logs por stdout/stderr.
-- `state.json` y `stopliga.lock` viven en `/data`.
+- `state.json`, `bootstrap_guard.json` y `stopliga.lock` viven en `/data`.
 
 ## Comportamiento de la route
 
@@ -116,6 +125,13 @@ Si la route no existe:
 - si sí existen, intenta crearla completa
 
 Si se autocrea sin variables explícitas, StopLiga guarda esa asignación automática como provisional y no la habilitará hasta que el usuario cambie VPN o targets desde la UI de UniFi. Si un backend rechaza `ALL_CLIENTS`, el último recurso es degradar a un dispositivo concreto y dejar igualmente la route deshabilitada hasta revisión manual.
+
+## Consistencia del feed
+
+- Por defecto, StopLiga fija `laliga_status.json` y `laliga_ip_list.txt` a la misma revisión de GitHub antes de sincronizar.
+- Si `STOPLIGA_STRICT_FEED_CONSISTENCY=true`, un fallo resolviendo esa revisión detiene la sincronización.
+- Si `STOPLIGA_STRICT_FEED_CONSISTENCY=false`, degrada al fetch directo de ambos ficheros y lo deja reflejado en logs.
+- `STOPLIGA_FEED_ALLOW_PRIVATE_HOSTS=true` existe solo para laboratorio o tests locales; en producción conviene mantenerlo en `false`.
 
 ## Uso rápido
 
@@ -160,8 +176,21 @@ El proyecto incluye [docker-compose.yml](/Users/jonatan/Nextcloud/AI/Claude/Apps
 
 ```bash
 cp .env.example .env
+mkdir -p secrets
 docker compose up -d --build
 ```
+
+Si quieres evitar secretos en variables de entorno:
+
+```bash
+printf '%s\n' 'replace-me' > secrets/unifi_api_key
+printf '%s\n' 'change-me' > secrets/unifi_password
+chmod 600 secrets/unifi_api_key secrets/unifi_password
+```
+
+Y en `.env` deja solo `UNIFI_HOST` y, si aplica, `UNIFI_USERNAME`.
+
+El `docker-compose.yml` del repo ya viene preparado para Linux con `STOPLIGA_UID=1000` y `STOPLIGA_GID=1000` por defecto. Si tu host usa otro UID/GID, cámbialos en `.env`.
 
 Prueba puntual:
 

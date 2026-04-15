@@ -855,9 +855,23 @@ class BaseRouteBackend:
     def route_update_path(self, endpoint: str, route_record: dict[str, Any]) -> str:
         return f"{endpoint}/{route_id(route_record)}"
 
-    def create_route(self, payload: dict[str, Any]) -> None:
+    def create_route(self, payload: dict[str, Any]) -> dict[str, Any]:
         endpoint, _ = self.list_routes()
-        self.client.request("POST", endpoint, json_body=payload, expected_statuses=(200, 201))
+        created = self.client.request("POST", endpoint, json_body=payload, expected_statuses=(200, 201))
+        records = extract_records(created)
+        if records:
+            return records[0]
+        if isinstance(created, dict):
+            data = created.get("data")
+            if isinstance(data, dict):
+                return data
+            try:
+                route_id(created)
+            except StopLigaError:
+                pass
+            else:
+                return created
+        raise DiscoveryError(f"Create route on backend {self.backend_name} did not return the created route")
 
     def _detect_linked_list_id(self, route_record: dict[str, Any]) -> str | None:
         for key in (

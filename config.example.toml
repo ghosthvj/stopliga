@@ -10,6 +10,7 @@ dry_run = false
 invalid_entry_policy = "fail"
 max_destinations = 2048
 state_file = "/data/state.json"
+bootstrap_guard_file = "/data/bootstrap_guard.json"
 lock_file = "/data/stopliga.lock"
 log_level = "INFO"
 dump_payloads_on_error = false
@@ -18,6 +19,8 @@ dump_payloads_on_error = false
 status_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_status.json"
 ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
 verify_tls = true
+allow_private_hosts = false
+strict_consistency = true
 
 [unifi]
 host = "192.168.1.1"

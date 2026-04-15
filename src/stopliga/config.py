@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import tomllib
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from .errors import ConfigError
 from .models import Config
@@ -59,6 +61,31 @@ def _normalize_destination_field(value: Any) -> str:
     return value.strip()
 
 
+def _is_private_hostname(hostname: str) -> bool:
+    lowered = hostname.strip().lower()
+    if lowered in {"localhost"}:
+        return True
+    try:
+        ip_value = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    return bool(ip_value.is_private or ip_value.is_loopback or ip_value.is_link_local or ip_value.is_reserved)
+
+
+def _validate_feed_url(url: str, *, field_name: str, allow_private_hosts: bool) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"}:
+        raise ConfigError(f"{field_name} must use http or https, not {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ConfigError(f"{field_name} must include a hostname")
+    if parsed.username or parsed.password:
+        raise ConfigError(f"{field_name} must not embed credentials")
+    if parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ConfigError(f"{field_name} only allows plain HTTP for localhost/127.0.0.1")
+    if _is_private_hostname(parsed.hostname) and not allow_private_hosts and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ConfigError(f"{field_name} points to a private or local host; set feed_allow_private_hosts to override")
+
+
 def _parse_csv_list(value: Any, *, field_name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -109,6 +136,8 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "unifi_ca_file": unifi.get("ca_file"),
         "feed_verify_tls": feeds.get("verify_tls"),
         "feed_ca_file": feeds.get("ca_file"),
+        "feed_allow_private_hosts": feeds.get("allow_private_hosts"),
+        "strict_feed_consistency": feeds.get("strict_consistency"),
         "request_timeout": app.get("request_timeout"),
         "retries": app.get("retries"),
         "interval_seconds": app.get("interval_seconds"),
@@ -117,6 +146,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "max_destinations": app.get("max_destinations"),
         "state_file": app.get("state_file"),
         "lock_file": app.get("lock_file"),
+        "bootstrap_guard_file": app.get("bootstrap_guard_file"),
         "health_max_age_seconds": app.get("health_max_age_seconds"),
         "log_level": app.get("log_level"),
         "vpn_name": bootstrap.get("vpn_name"),
@@ -188,6 +218,31 @@ def _env_value(environ: Mapping[str, str], key: str) -> str | None:
     return value
 
 
+def _secret_env_value(environ: Mapping[str, str], key: str) -> str | None:
+    return _env_value(environ, key)
+
+
+def _secret_file_value(environ: Mapping[str, str], key_file: str, *, field_name: str) -> str | None:
+    path_value = _env_value(environ, key_file)
+    if path_value is None:
+        return None
+    try:
+        secret = Path(path_value).expanduser().read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"Unable to read secret file for {field_name}: {path_value}") from exc
+    if not secret:
+        raise ConfigError(f"Secret file for {field_name} is empty: {path_value}")
+    return secret
+
+
+def _env_secret_first(environ: Mapping[str, str], *, field_name: str, key: str, key_file: str) -> str | None:
+    direct = _secret_env_value(environ, key)
+    from_file = _secret_file_value(environ, key_file, field_name=field_name)
+    if direct is not None and from_file is not None:
+        raise ConfigError(f"Set either {key} or {key_file} for {field_name}, not both")
+    return direct if direct is not None else from_file
+
+
 def _first(*values: Any) -> Any:
     for value in values:
         if value is not None:
@@ -233,9 +288,24 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         run_mode=_normalize_run_mode(args, env, file_cfg),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
-        api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
-        username=_first(args.username, _env_value(env, "UNIFI_USERNAME"), file_cfg.get("username"), DEFAULTS.username),
-        password=_first(args.password, _env_value(env, "UNIFI_PASSWORD"), file_cfg.get("password"), DEFAULTS.password),
+        api_key=_first(
+            args.api_key,
+            _env_secret_first(env, field_name="api_key", key="UNIFI_API_KEY", key_file="UNIFI_API_KEY_FILE"),
+            file_cfg.get("api_key"),
+            DEFAULTS.api_key,
+        ),
+        username=_first(
+            args.username,
+            _env_secret_first(env, field_name="username", key="UNIFI_USERNAME", key_file="UNIFI_USERNAME_FILE"),
+            file_cfg.get("username"),
+            DEFAULTS.username,
+        ),
+        password=_first(
+            args.password,
+            _env_secret_first(env, field_name="password", key="UNIFI_PASSWORD", key_file="UNIFI_PASSWORD_FILE"),
+            file_cfg.get("password"),
+            DEFAULTS.password,
+        ),
         site=str(_first(args.site, _env_value(env, "UNIFI_SITE"), file_cfg.get("site"), DEFAULTS.site)),
         route_name=str(_first(args.route_name, _env_value(env, "STOPLIGA_ROUTE_NAME"), file_cfg.get("route_name"), DEFAULTS.route_name)),
         destination_field=_normalize_destination_field(
@@ -254,6 +324,14 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             field_name="feed_verify_tls",
         ),
         feed_ca_file=_parse_path(value, field_name="feed_ca_file") if (value := _first(_env_value(env, "STOPLIGA_FEED_CA_FILE"), file_cfg.get("feed_ca_file"))) else None,
+        feed_allow_private_hosts=_parse_bool(
+            _first(_env_value(env, "STOPLIGA_FEED_ALLOW_PRIVATE_HOSTS"), file_cfg.get("feed_allow_private_hosts"), DEFAULTS.feed_allow_private_hosts),
+            field_name="feed_allow_private_hosts",
+        ),
+        strict_feed_consistency=_parse_bool(
+            _first(_env_value(env, "STOPLIGA_STRICT_FEED_CONSISTENCY"), file_cfg.get("strict_feed_consistency"), DEFAULTS.strict_feed_consistency),
+            field_name="strict_feed_consistency",
+        ),
         request_timeout=_parse_float(
             _first(args.request_timeout, _env_value(env, "STOPLIGA_REQUEST_TIMEOUT"), file_cfg.get("request_timeout"), DEFAULTS.request_timeout),
             field_name="request_timeout",
@@ -284,6 +362,10 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         lock_file=_parse_path(
             _first(args.lock_file, _env_value(env, "STOPLIGA_LOCK_FILE"), file_cfg.get("lock_file"), str(DEFAULTS.lock_file)),
             field_name="lock_file",
+        ),
+        bootstrap_guard_file=_parse_path(
+            _first(_env_value(env, "STOPLIGA_BOOTSTRAP_GUARD_FILE"), file_cfg.get("bootstrap_guard_file"), str(DEFAULTS.bootstrap_guard_file)),
+            field_name="bootstrap_guard_file",
         ),
         health_max_age_seconds=_parse_int(value, field_name="health_max_age_seconds") if (value := _first(args.health_max_age_seconds, _env_value(env, "STOPLIGA_HEALTH_MAX_AGE_SECONDS"), file_cfg.get("health_max_age_seconds"))) is not None else None,
         log_level=str(log_level).upper(),
@@ -317,6 +399,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
+    _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
+    _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
     if validate_connection:
         if not config.has_unifi_auth():
             raise ConfigError("local mode requires UNIFI_HOST and either UNIFI_API_KEY or UNIFI_USERNAME/UNIFI_PASSWORD")

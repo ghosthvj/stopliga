@@ -2,6 +2,8 @@
 .gitignore
 .env
 .env.*
+.tmp/
+secrets/
 __pycache__/
 *.pyc
 *.pyo
@@ -9,8 +11,18 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+.tox/
+.nox/
+.venv/
+venv/
+*.log
+*.swp
+*.swo
 dist/
 build/
 tests/
+.github/
 .DS_Store
 data/
