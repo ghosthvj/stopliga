@@ -49,9 +49,26 @@ def _ensure_writable_paths(uid: int, gid: int) -> None:
 
 
 def _drop_privileges(uid: int, gid: int) -> None:
-    os.setgroups([])
-    os.setgid(gid)
-    os.setuid(uid)
+    try:
+        os.setgroups([])
+    except PermissionError:
+        pass
+
+    if os.getegid() != gid:
+        try:
+            os.setgid(gid)
+        except PermissionError as exc:
+            raise PermissionError(
+                f"Unable to switch group to {gid}; run the container as that user/group or allow SETGID"
+            ) from exc
+
+    if os.geteuid() != uid:
+        try:
+            os.setuid(uid)
+        except PermissionError as exc:
+            raise PermissionError(
+                f"Unable to switch user to {uid}; run the container as that user/group or allow SETUID"
+            ) from exc
 
 
 def main() -> int:

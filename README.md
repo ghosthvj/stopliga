@@ -211,9 +211,10 @@ UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key
 El `docker-compose.yml` del repo está simplificado para producción normal:
 
 - imagen `bluepr0/stopliga:latest`
-- `uid/gid 1000`
+- arranca como root solo para preparar `/data` y baja a `uid/gid 1000`
 - volumen `./data:/data`
 - secretos en `./secrets:/run/secrets:ro`
+- healthcheck desactivado en compose para evitar bloqueos del gestor de despliegue
 
 Prueba puntual:
 
