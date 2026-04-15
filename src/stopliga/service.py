@@ -33,6 +33,28 @@ class StopLigaService:
         self.logger = logging.getLogger("stopliga.service")
         self.state_store = StateStore(config.state_file)
 
+    def _load_runtime_state(self) -> dict[str, object]:
+        try:
+            return self.state_store.load()
+        except ConfigError as exc:
+            try:
+                bad_path = self.state_store.quarantine_invalid_file()
+            except StateError as quarantine_exc:
+                log_event(self.logger, logging.WARNING, "state_quarantine_failed", error=quarantine_exc, original_error=exc)
+            else:
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "state_file_quarantined",
+                    path=self.config.state_file,
+                    quarantined_to=bad_path,
+                    error=exc,
+                )
+            return {}
+        except StateError as exc:
+            log_event(self.logger, logging.WARNING, "state_load_failed", error=exc)
+            return {}
+
     def _write_state(
         self,
         *,
@@ -43,11 +65,10 @@ class StopLigaService:
         error_stage: str | None = None,
     ) -> None:
         now = utcnow_iso()
-        try:
-            previous = self.state_store.load()
-        except (ConfigError, StateError) as exc:
-            previous = {}
-            log_event(self.logger, logging.WARNING, "state_load_failed", error=exc)
+        previous = self._load_runtime_state()
+        previous_failures = previous.get("consecutive_failures", 0)
+        if not isinstance(previous_failures, int):
+            previous_failures = 0
         snapshot = StateSnapshot(
             status=status,
             run_mode=self.config.run_mode,
@@ -64,6 +85,7 @@ class StopLigaService:
             changed=result.changed if result else False,
             created=result.created if result else False,
             dry_run=result.dry_run if result else False,
+            consecutive_failures=0 if status in {"success", "dry_run"} else previous_failures + 1,
             partial_failure=partial_failure,
             last_error_stage=error_stage,
             bootstrap_source=result.bootstrap_source if result else previous.get("bootstrap_source"),
@@ -220,7 +242,7 @@ class StopLigaService:
         client.login()
         site_context = client.resolve_site_context()
         created = False
-        previous_state = self.state_store.load()
+        previous_state = self._load_runtime_state()
         bootstrap_source: str | None = None
         bootstrap_network_id: str | None = None
         bootstrap_target_macs: tuple[str, ...] = ()
@@ -323,8 +345,8 @@ class StopLigaService:
             mode="local",
             dry_run=self.config.dry_run,
         )
-        feed_snapshot = load_feed_snapshot(self.config)
         try:
+            feed_snapshot = load_feed_snapshot(self.config)
             result = self._run_once(feed_snapshot)
             self._write_state(status="dry_run" if result.dry_run else "success", result=result)
             log_event(
@@ -343,7 +365,7 @@ class StopLigaService:
                     status="error",
                     error=str(exc),
                     partial_failure=isinstance(exc, PartialUpdateError),
-                    error_stage=exc.stage if isinstance(exc, PartialUpdateError) else None,
+                    error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
                 )
             except StateError as state_exc:
                 log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)
@@ -362,7 +384,7 @@ class StopLigaService:
                         status="error",
                         error=str(exc),
                         partial_failure=isinstance(exc, PartialUpdateError),
-                        error_stage=exc.stage if isinstance(exc, PartialUpdateError) else None,
+                        error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
                     )
                 except StateError as state_exc:
                     log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)

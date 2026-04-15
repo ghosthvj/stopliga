@@ -91,6 +91,21 @@ class StateStore:
             raise ConfigError(f"State file root must be a JSON object: {self.path}")
         return payload
 
+    def quarantine_invalid_file(self) -> Path | None:
+        """Move a malformed state file aside so runtime sync can continue."""
+
+        if not self.path.exists():
+            return None
+        bad_name = f"{self.path.name}.bad-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        bad_path = self.path.with_name(bad_name)
+        try:
+            os.replace(self.path, bad_path)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise StateError(f"Unable to quarantine invalid state file {self.path}: {exc}") from exc
+        return bad_path
+
     def write(self, snapshot: StateSnapshot) -> None:
         ensure_parent_dir(self.path)
         payload = asdict(snapshot)
@@ -115,8 +130,11 @@ class StateStore:
             return False, str(exc)
         last_success = state.get("last_success_at")
         status = state.get("status")
-        if not last_success or status not in {"success", "dry_run"}:
+        consecutive_failures = state.get("consecutive_failures", 0)
+        if not last_success:
             return False, "no recent successful run in state file"
+        if status not in {"success", "dry_run"}:
+            return False, f"last run status is {status!r} with consecutive_failures={consecutive_failures}"
 
         try:
             age_seconds = (datetime.now(timezone.utc) - _parse_iso8601(str(last_success))).total_seconds()

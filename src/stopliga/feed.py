@@ -8,12 +8,25 @@ import logging
 import ssl
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, urlparse
 
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
 from .utils import canonicalize_ip_token, make_ssl_context, sleep_with_backoff, stable_hash
+
+
+@dataclass(frozen=True)
+class GitHubRawFile:
+    owner: str
+    repo: str
+    ref: str
+    path: str
+
+    def resolved_url(self, resolved_ref: str) -> str:
+        return f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{resolved_ref}/{self.path}"
 
 
 def _truthy_state(value: Any) -> bool:
@@ -116,12 +129,83 @@ def fetch_text(
     raise NetworkError(f"Unable to fetch {url}: {last_error}")
 
 
+def _parse_github_raw_file(url: str) -> GitHubRawFile | None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return None
+    if parsed.netloc != "raw.githubusercontent.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 4:
+        return None
+    owner, repo, ref = parts[:3]
+    path = "/".join(parts[3:])
+    if not all((owner, repo, ref, path)):
+        return None
+    return GitHubRawFile(owner=owner, repo=repo, ref=ref, path=path)
+
+
+def _resolve_github_commit_sha(
+    owner: str,
+    repo: str,
+    ref: str,
+    *,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    ca_file: Any = None,
+) -> str:
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{quote(ref, safe='')}"
+    payload = fetch_text(
+        api_url,
+        timeout=timeout,
+        retries=retries,
+        verify_tls=verify_tls,
+        ca_file=ca_file,
+    )
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise InvalidFeedError(f"GitHub commit lookup returned invalid JSON for {owner}/{repo}@{ref}") from exc
+    if not isinstance(parsed, dict):
+        raise InvalidFeedError(f"GitHub commit lookup returned an invalid payload for {owner}/{repo}@{ref}")
+    sha = parsed.get("sha")
+    if not isinstance(sha, str) or not sha.strip():
+        raise InvalidFeedError(f"GitHub commit lookup did not return a sha for {owner}/{repo}@{ref}")
+    return sha.strip()
+
+
+def _resolve_consistent_feed_urls(config: Config) -> tuple[str, str, str | None]:
+    status_ref = _parse_github_raw_file(config.status_url)
+    ip_ref = _parse_github_raw_file(config.ip_list_url)
+    if status_ref is None or ip_ref is None:
+        return config.status_url, config.ip_list_url, None
+    if (status_ref.owner, status_ref.repo, status_ref.ref) != (ip_ref.owner, ip_ref.repo, ip_ref.ref):
+        return config.status_url, config.ip_list_url, None
+
+    sha = _resolve_github_commit_sha(
+        status_ref.owner,
+        status_ref.repo,
+        status_ref.ref,
+        timeout=config.request_timeout,
+        retries=config.retries,
+        verify_tls=config.feed_verify_tls,
+        ca_file=config.feed_ca_file,
+    )
+    return status_ref.resolved_url(sha), ip_ref.resolved_url(sha), sha
+
+
 def load_feed_snapshot(config: Config) -> FeedSnapshot:
     """Download and validate the status + IP feed."""
 
     logger = logging.getLogger("stopliga.feed")
+    status_url, ip_list_url, source_revision = _resolve_consistent_feed_urls(config)
+    if source_revision:
+        log_event(logger, logging.INFO, "feed_revision_resolved", revision=source_revision)
+    elif config.status_url != status_url or config.ip_list_url != ip_list_url:
+        log_event(logger, logging.WARNING, "feed_revision_resolution_skipped", status_url=config.status_url, ip_list_url=config.ip_list_url)
     raw_status_text = fetch_text(
-        config.status_url,
+        status_url,
         timeout=config.request_timeout,
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
@@ -130,7 +214,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     raw_status, is_blocked = parse_status_payload(raw_status_text)
 
     raw_ip_text = fetch_text(
-        config.ip_list_url,
+        ip_list_url,
         timeout=config.request_timeout,
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
@@ -170,6 +254,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         logger,
         logging.INFO,
         "feed_loaded",
+        revision=source_revision,
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,
         raw_lines=raw_lines,

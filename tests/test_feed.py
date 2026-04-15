@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from stopliga.errors import InvalidFeedError  # noqa: E402
-from stopliga.feed import parse_ip_list, parse_status_payload  # noqa: E402
+from stopliga.feed import load_feed_snapshot, parse_ip_list, parse_status_payload  # noqa: E402
+from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
 from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
 
@@ -83,6 +85,55 @@ class StateStoreTests(unittest.TestCase):
             healthy, message = store.healthcheck(60)
             self.assertFalse(healthy)
             self.assertIn("future", message)
+
+    def test_healthcheck_rejects_recent_error_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+            recent = datetime.now(timezone.utc) - timedelta(seconds=10)
+            store.path.write_text(
+                f"""{{
+                  "status": "error",
+                  "consecutive_failures": 3,
+                  "last_success_at": "{recent.isoformat()}"
+                }}""",
+                encoding="utf-8",
+            )
+            healthy, message = store.healthcheck(60)
+            self.assertFalse(healthy)
+            self.assertIn("consecutive_failures=3", message)
+
+
+class FeedLoadingTests(unittest.TestCase):
+    def test_load_feed_snapshot_pins_github_raw_urls_to_single_revision(self) -> None:
+        config = Config(
+            status_url="https://raw.githubusercontent.com/example/repo/main/status.json",
+            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            retries=1,
+        )
+        calls: list[str] = []
+        responses = {
+            "https://api.github.com/repos/example/repo/commits/main": '{"sha": "deadbeef"}',
+            "https://raw.githubusercontent.com/example/repo/deadbeef/status.json": '{"isBlocked": true}',
+            "https://raw.githubusercontent.com/example/repo/deadbeef/ip_list.txt": "192.0.2.1\n",
+        }
+
+        def fake_fetch(url: str, **_: object) -> str:
+            calls.append(url)
+            return responses[url]
+
+        with patch("stopliga.feed.fetch_text", side_effect=fake_fetch):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(snapshot.is_blocked)
+        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(
+            calls,
+            [
+                "https://api.github.com/repos/example/repo/commits/main",
+                "https://raw.githubusercontent.com/example/repo/deadbeef/status.json",
+                "https://raw.githubusercontent.com/example/repo/deadbeef/ip_list.txt",
+            ],
+        )
 
 
 class RoutePayloadTests(unittest.TestCase):

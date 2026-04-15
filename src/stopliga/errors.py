@@ -52,6 +52,13 @@ class StateError(StopLigaError):
 class PartialUpdateError(StopLigaError):
     """Raised when a multi-step remote update partially succeeds before failing."""
 
-    def __init__(self, stage: str, message: str):
+    def __init__(self, failed_stage: str, completed_stages: tuple[str, ...], message: str):
         super().__init__(message)
-        self.stage = stage
+        self.failed_stage = failed_stage
+        self.completed_stages = completed_stages
+
+    @property
+    def stage(self) -> str:
+        """Backward-compatible alias for the failed stage name."""
+
+        return self.failed_stage

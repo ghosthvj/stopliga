@@ -613,7 +613,8 @@ class UniFiClient:
         """Return network definitions from the local controller."""
 
         prefix = self.discover_network_prefix()
-        payload = self.request("GET", f"{prefix}/api/s/{self.config.site}/rest/networkconf")
+        site_name = self.resolve_site_context().internal_name
+        payload = self.request("GET", f"{prefix}/api/s/{site_name}/rest/networkconf")
         records = extract_records(payload)
         if not records:
             raise DiscoveryError("UniFi did not return any networks from rest/networkconf")
@@ -645,7 +646,8 @@ class UniFiClient:
         """Return clients from the local controller."""
 
         prefix = self.discover_network_prefix()
-        payload = self.request("GET", f"{prefix}/api/s/{self.config.site}/stat/sta")
+        site_name = self.resolve_site_context().internal_name
+        payload = self.request("GET", f"{prefix}/api/s/{site_name}/stat/sta")
         return extract_records(payload)
 
     def resolve_target_devices(self, targets: Sequence[str]) -> list[dict[str, Any]]:
@@ -792,6 +794,13 @@ class LinkedTrafficMatchingListHelper:
             raise UnsupportedRouteShapeError(f"Linked traffic matching list {list_id} has unsupported type {list_type!r}")
         if not isinstance(current_items, list):
             raise UnsupportedRouteShapeError(f"Linked traffic matching list {list_id} does not expose items[]")
+        expected_version = 4 if list_type == "IPV4_ADDRESSES" else 6
+        for token in desired_ips:
+            token_version = 6 if ":" in token else 4
+            if token_version != expected_version:
+                raise UnsupportedRouteShapeError(
+                    f"Linked traffic matching list {list_id} expects IPv{expected_version} entries but received {token!r}"
+                )
         current_destinations = sort_ip_tokens(str(item) for item in current_items)
         changed_fields: list[str] = []
         if current_destinations != list(desired_ips):
@@ -1036,9 +1045,17 @@ def choose_existing_route_backend(
     """Find the backend containing the requested route."""
 
     errors: list[str] = []
+    any_backend_reachable = False
     for backend in available_backends(client, site_context):
         try:
-            endpoint, route_record = backend.find_route(route_name_value)
+            endpoint, routes = backend.list_routes()
+            any_backend_reachable = True
+            matches = find_matching_routes(routes, route_name_value)
+            if not matches:
+                continue
+            if len(matches) > 1:
+                raise DuplicateRouteError(f"Route {route_name_value!r} matched multiple entries in backend {backend.backend_name}")
+            route_record = matches[0]
             log_event(
                 logging.getLogger("stopliga.route"),
                 logging.INFO,
@@ -1052,6 +1069,10 @@ def choose_existing_route_backend(
             raise
         except StopLigaError as exc:
             errors.append(f"{backend.backend_name}: {exc}")
+    if not any_backend_reachable:
+        raise DiscoveryError(
+            f"Unable to inspect route backends while looking for {route_name_value!r}. " + " | ".join(errors)
+        )
     raise RouteNotFoundError(f"Unable to find route {route_name_value!r}. " + " | ".join(errors))
 
 
@@ -1112,8 +1133,10 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
         operations.append(("route", plan.route_method, plan.route_endpoint, plan.route_payload))
 
     completed_steps: list[str] = []
+    current_stage = "verify"
     try:
         for stage, method, endpoint, payload in operations:
+            current_stage = stage
             if stage == "linked_list":
                 log_event(logger, logging.INFO, "linked_list_updating", linked_list_id=plan.linked_list_id)
             else:
@@ -1127,12 +1150,13 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
                 )
             client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204))
             completed_steps.append(stage)
+        current_stage = "verify"
         backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
     except StopLigaError as exc:
-        stage = completed_steps[-1] if completed_steps else "none"
         raise PartialUpdateError(
-            stage,
-            f"Update failed after completing steps={','.join(completed_steps) or 'none'}: {exc}",
+            current_stage,
+            tuple(completed_steps),
+            f"Update failed at stage={current_stage} after completing steps={','.join(completed_steps) or 'none'}: {exc}",
         ) from exc
 
 

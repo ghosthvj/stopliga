@@ -151,6 +151,7 @@ class StateSnapshot:
     changed: bool
     created: bool
     dry_run: bool
+    consecutive_failures: int = 0
     partial_failure: bool = False
     last_error_stage: str | None = None
     bootstrap_source: str | None = None
