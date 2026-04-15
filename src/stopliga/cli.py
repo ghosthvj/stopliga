@@ -43,6 +43,7 @@ def _run_healthcheck(config) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_logging("INFO")
     try:
         parser = build_parser()
         args = parser.parse_args(argv)

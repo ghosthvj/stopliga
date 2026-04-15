@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from threading import Event
 
 from .errors import AuthenticationError, ConfigError, PartialUpdateError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
 from .feed import load_feed_snapshot
-from .logging_utils import log_event
+from .logging_utils import log_context, log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
 from .notifier import send_notifications
 from .state import StateStore, utcnow_iso
@@ -98,6 +99,7 @@ class StopLigaService:
             last_success_at=None,
             last_error=None,
             last_mode=None,
+            last_sync_id=None,
             last_route_id=None,
             last_backend=None,
             feed_hash=None,
@@ -120,6 +122,10 @@ class StopLigaService:
         error: str | None = None,
         partial_failure: bool = False,
         error_stage: str | None = None,
+        rollback_attempted: bool = False,
+        rollback_completed: bool = False,
+        rollback_error: str | None = None,
+        sync_id: str | None = None,
     ) -> None:
         now = utcnow_iso()
         previous = self._load_runtime_state()
@@ -135,6 +141,7 @@ class StopLigaService:
             last_success_at=now if status in {"success", "dry_run"} else previous.get("last_success_at"),
             last_error=error,
             last_mode=result.mode if result else previous.get("last_mode"),
+            last_sync_id=sync_id or previous.get("last_sync_id"),
             last_route_id=result.route_id if result else previous.get("last_route_id"),
             last_backend=result.backend_name if result else previous.get("last_backend"),
             feed_hash=result.feed_hash if result else previous.get("feed_hash"),
@@ -145,6 +152,9 @@ class StopLigaService:
             consecutive_failures=0 if status in {"success", "dry_run"} else previous_failures + 1,
             partial_failure=partial_failure,
             last_error_stage=error_stage,
+            rollback_attempted=rollback_attempted,
+            rollback_completed=rollback_completed,
+            rollback_error=rollback_error,
             last_is_blocked=result.is_blocked if result else previous.get("last_is_blocked"),
             bootstrap_source=result.bootstrap_source if result else previous.get("bootstrap_source"),
             bootstrap_network_id=result.bootstrap_network_id if result else previous.get("bootstrap_network_id"),
@@ -384,7 +394,7 @@ class StopLigaService:
                 )
             applied_preview = preview
             try:
-                route_record = bootstrap_backend.create_route(preview.payload)
+                endpoint, route_record = bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
                 if preview.source == "auto-bootstrap":
                     target_device = client.pick_default_target_device()
@@ -399,7 +409,7 @@ class StopLigaService:
                         reason="all_clients_target_rejected",
                     )
                     try:
-                        route_record = bootstrap_backend.create_route(fallback_payload)
+                        endpoint, route_record = bootstrap_backend.create_route(fallback_payload)
                     except StopLigaError as fallback_exc:
                         raise RouteNotFoundError(
                             f"Route {self.config.route_name!r} not found and bootstrap failed. "
@@ -419,7 +429,6 @@ class StopLigaService:
             bootstrap_network_id = str(applied_preview.payload.get("network_id") or "") or None
             bootstrap_target_macs = self._route_target_macs(applied_preview.payload)
             backend = bootstrap_backend
-            endpoint, _ = backend.list_routes()
 
         return self._plan_route_update(
             backend=backend,
@@ -435,46 +444,52 @@ class StopLigaService:
         )
 
     def run_once(self) -> SyncResult:
-        log_event(
-            self.logger,
-            logging.INFO,
-            "sync_start",
-            route=self.config.route_name,
-            site=self.config.site,
-            mode="local",
-            dry_run=self.config.dry_run,
-        )
-        try:
-            previous_runtime_state = self._load_runtime_state()
-            feed_snapshot = load_feed_snapshot(self.config)
-            result = self._run_once(feed_snapshot)
-            self._write_state(status="dry_run" if result.dry_run else "success", result=result)
-            self._write_bootstrap_guard(result)
-            try:
-                send_notifications(self.config, result, previous_runtime_state)
-            except StopLigaError as exc:
-                log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
+        sync_id = uuid4().hex[:12]
+        with log_context(sync_id=sync_id):
             log_event(
                 self.logger,
                 logging.INFO,
-                "sync_finish",
-                mode=result.mode,
-                changed=result.changed,
-                created=result.created,
-                route_id=result.route_id,
+                "sync_start",
+                route=self.config.route_name,
+                site=self.config.site,
+                mode="local",
+                dry_run=self.config.dry_run,
             )
-            return result
-        except StopLigaError as exc:
             try:
-                self._write_state(
-                    status="error",
-                    error=str(exc),
-                    partial_failure=isinstance(exc, PartialUpdateError),
-                    error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
+                previous_runtime_state = self._load_runtime_state()
+                feed_snapshot = load_feed_snapshot(self.config)
+                result = self._run_once(feed_snapshot)
+                self._write_state(status="dry_run" if result.dry_run else "success", result=result, sync_id=sync_id)
+                self._write_bootstrap_guard(result)
+                try:
+                    send_notifications(self.config, result, previous_runtime_state)
+                except StopLigaError as exc:
+                    log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
+                log_event(
+                    self.logger,
+                    logging.INFO,
+                    "sync_finish",
+                    mode=result.mode,
+                    changed=result.changed,
+                    created=result.created,
+                    route_id=result.route_id,
                 )
-            except StateError as state_exc:
-                log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)
-            raise
+                return result
+            except StopLigaError as exc:
+                try:
+                    self._write_state(
+                        status="error",
+                        error=str(exc),
+                        partial_failure=isinstance(exc, PartialUpdateError),
+                        error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
+                        rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
+                        rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
+                        rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
+                        sync_id=sync_id,
+                    )
+                except StateError as state_exc:
+                    log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)
+                raise
 
     def run_loop(self, stop_event: Event) -> int:
         log_event(self.logger, logging.INFO, "loop_start", interval_seconds=self.config.interval_seconds)
@@ -490,6 +505,10 @@ class StopLigaService:
                         error=str(exc),
                         partial_failure=isinstance(exc, PartialUpdateError),
                         error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
+                        rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
+                        rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
+                        rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
+                        sync_id=None,
                     )
                 except StateError as state_exc:
                     log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)

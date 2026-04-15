@@ -23,6 +23,7 @@ if str(SRC) not in sys.path:
 
 from stopliga.models import Config  # noqa: E402
 from stopliga.service import StopLigaService  # noqa: E402
+from stopliga.notifier import _safe_notification_url  # noqa: E402
 from stopliga.errors import DiscoveryError, NetworkError, PartialUpdateError, UnsupportedRouteShapeError  # noqa: E402
 
 
@@ -47,6 +48,7 @@ class FakeState:
     required_api_key: str | None = None
     session_authenticated: bool = False
     fail_v2_route_list: bool = False
+    fail_v2_route_list_after_create: bool = False
     fail_route_update: bool = False
     gotify_messages: list[dict[str, Any]] = field(default_factory=list)
     telegram_messages: list[dict[str, Any]] = field(default_factory=list)
@@ -131,6 +133,8 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
                 return
             self.state.created_route_counter += 1
             self.state.route = {"_id": f"created-{self.state.created_route_counter}", **payload}
+            if self.state.fail_v2_route_list_after_create:
+                self.state.fail_v2_route_list = True
             self._send_json(201, clone(self.state.route))
             return
 
@@ -671,6 +675,26 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertTrue(result.changed)
             self.assertFalse(state.route["enabled"])
 
+    def test_bootstrap_does_not_relist_routes_after_create(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route=None,
+            networks=[{"_id": "vpn-network-1", "name": "Mullvad DE", "purpose": "vpn-client"}],
+            clients=[{"hostname": "apple-tv", "mac": "aa:bb:cc:dd:ee:01"}],
+            fail_v2_route_list_after_create=True,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+            )
+            result = StopLigaService(config).run_once()
+            self.assertTrue(result.created)
+            self.assertEqual(result.route_id, "created-1")
+
     def test_linked_list_rejects_wrong_ip_family(self) -> None:
         state = FakeState(
             status_payload={"blocked": True},
@@ -784,9 +808,16 @@ class ServiceIntegrationTests(unittest.TestCase):
                 StopLigaService(config).run_once()
             self.assertEqual(ctx.exception.failed_stage, "route")
             self.assertEqual(ctx.exception.completed_stages, ("linked_list",))
+            self.assertTrue(ctx.exception.rollback_attempted)
+            self.assertTrue(ctx.exception.rollback_completed)
+            self.assertIsNone(ctx.exception.rollback_error)
+            self.assertEqual(state.linked_list["items"], ["203.0.113.0/24"])
             state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
             self.assertTrue(state_payload["partial_failure"])
             self.assertEqual(state_payload["last_error_stage"], "route")
+            self.assertTrue(state_payload["rollback_attempted"])
+            self.assertTrue(state_payload["rollback_completed"])
+            self.assertIsNone(state_payload["rollback_error"])
 
     def test_incomplete_route_is_not_enabled_automatically(self) -> None:
         state = FakeState(
@@ -884,7 +915,15 @@ class ServiceIntegrationTests(unittest.TestCase):
 
             original_post_json = notifier._post_json
 
-            def fake_post_json(url: str, payload: dict[str, Any], *, timeout: float) -> None:
+            def fake_post_json(
+                url: str,
+                payload: dict[str, Any],
+                *,
+                timeout: float,
+                retries: int,
+                verify_tls: bool,
+                ca_file: Any,
+            ) -> None:
                 state.telegram_messages.append({"url": url, **payload})
 
             notifier._post_json = fake_post_json
@@ -898,3 +937,31 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertIn("Route: LaLiga", state.telegram_messages[0]["text"])
             self.assertIn("Block status: ACTIVE -> INACTIVE", state.telegram_messages[0]["text"])
             self.assertIn("Blocking: INACTIVE", state.telegram_messages[0]["text"])
+
+    def test_notification_error_redacts_telegram_token(self) -> None:
+        safe = _safe_notification_url("https://api.telegram.org/bot123456:secret-token/sendMessage")
+        self.assertEqual(safe, "https://api.telegram.org/bot***/sendMessage")
+
+    def test_state_records_last_sync_id(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+            )
+            StopLigaService(config).run_once()
+            state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertRegex(state_payload["last_sync_id"], r"^[0-9a-f]{12}$")

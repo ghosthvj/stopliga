@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import logging
 from typing import Any
 
 
 SENSITIVE_FIELD_MARKERS = {"password", "secret", "token", "api_key", "key"}
+_LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("stopliga_log_context", default={})
 
 
 def _quote(value: Any) -> str:
@@ -37,7 +40,11 @@ class KeyValueFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         fields = getattr(record, "fields", {})
         event = getattr(record, "event", None)
-        sanitized = _sanitize_fields(fields if isinstance(fields, dict) else {})
+        merged_fields: dict[str, Any] = {}
+        merged_fields.update(_LOG_CONTEXT.get({}))
+        if isinstance(fields, dict):
+            merged_fields.update(fields)
+        sanitized = _sanitize_fields(merged_fields)
         payload = {
             "level": record.levelname,
             "logger": record.name,
@@ -68,3 +75,16 @@ def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> 
     """Emit a structured log event."""
 
     logger.log(level, event, extra={"event": event, "fields": fields})
+
+
+@contextmanager
+def log_context(**fields: Any):
+    """Temporarily attach structured fields to all logs in the current context."""
+
+    current = dict(_LOG_CONTEXT.get({}))
+    current.update(fields)
+    token = _LOG_CONTEXT.set(current)
+    try:
+        yield
+    finally:
+        _LOG_CONTEXT.reset(token)

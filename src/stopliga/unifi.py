@@ -855,22 +855,22 @@ class BaseRouteBackend:
     def route_update_path(self, endpoint: str, route_record: dict[str, Any]) -> str:
         return f"{endpoint}/{route_id(route_record)}"
 
-    def create_route(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_route(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         endpoint, _ = self.list_routes()
         created = self.client.request("POST", endpoint, json_body=payload, expected_statuses=(200, 201))
         records = extract_records(created)
         if records:
-            return records[0]
+            return endpoint, records[0]
         if isinstance(created, dict):
             data = created.get("data")
             if isinstance(data, dict):
-                return data
+                return endpoint, data
             try:
                 route_id(created)
             except StopLigaError:
                 pass
             else:
-                return created
+                return endpoint, created
         raise DiscoveryError(f"Create route on backend {self.backend_name} did not return the created route")
 
     def _detect_linked_list_id(self, route_record: dict[str, Any]) -> str | None:
@@ -1133,6 +1133,7 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
 
     logger = logging.getLogger("stopliga.apply")
     operations: list[tuple[str, str, str, dict[str, Any]]] = []
+    rollback_operations: dict[str, tuple[str, str, str, dict[str, Any]]] = {}
 
     if plan.route_payload and plan.linked_list_payload:
         if plan.current_enabled and not plan.desired_enabled:
@@ -1145,6 +1146,23 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
         operations.append(("linked_list", "PUT", plan.linked_list_endpoint, plan.linked_list_payload))
     elif plan.route_payload:
         operations.append(("route", plan.route_method, plan.route_endpoint, plan.route_payload))
+
+    if plan.raw_route and plan.route_payload:
+        rollback_route_payload = build_route_update_template(plan.raw_route)
+        if rollback_route_payload:
+            rollback_operations["route"] = ("route", plan.route_method, plan.route_endpoint, rollback_route_payload)
+
+    if plan.linked_list_payload and plan.linked_list_endpoint and plan.linked_list_id:
+        rollback_operations["linked_list"] = (
+            "linked_list",
+            "PUT",
+            plan.linked_list_endpoint,
+            {
+                "type": plan.linked_list_payload.get("type"),
+                "name": plan.linked_list_payload.get("name"),
+                "items": list(plan.linked_list_current_destinations),
+            },
+        )
 
     completed_steps: list[str] = []
     current_stage = "verify"
@@ -1167,10 +1185,54 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
         current_stage = "verify"
         backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
     except StopLigaError as exc:
+        rollback_attempted = False
+        rollback_completed = False
+        rollback_error: str | None = None
+        rollback_steps = [rollback_operations[stage] for stage in reversed(completed_steps) if stage in rollback_operations]
+        if rollback_steps:
+            rollback_attempted = True
+            try:
+                for stage, method, endpoint, payload in rollback_steps:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "rollback_attempt",
+                        stage=stage,
+                        route_id=plan.route_id,
+                        backend=plan.backend_name,
+                    )
+                    client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204), retriable=False)
+                rollback_completed = True
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "rollback_completed",
+                    route_id=plan.route_id,
+                    backend=plan.backend_name,
+                    rolled_back_stages=",".join(reversed(completed_steps)),
+                )
+            except StopLigaError as rollback_exc:
+                rollback_error = str(rollback_exc)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "rollback_failed",
+                    route_id=plan.route_id,
+                    backend=plan.backend_name,
+                    failed_stage=current_stage,
+                    rollback_error=rollback_exc,
+                )
         raise PartialUpdateError(
             current_stage,
             tuple(completed_steps),
-            f"Update failed at stage={current_stage} after completing steps={','.join(completed_steps) or 'none'}: {exc}",
+            (
+                f"Update failed at stage={current_stage} after completing steps={','.join(completed_steps) or 'none'}: {exc}. "
+                f"rollback_attempted={rollback_attempted} rollback_completed={rollback_completed}"
+                + (f" rollback_error={rollback_error}" if rollback_error else "")
+            ),
+            rollback_attempted=rollback_attempted,
+            rollback_completed=rollback_completed,
+            rollback_error=rollback_error,
         ) from exc
 
 

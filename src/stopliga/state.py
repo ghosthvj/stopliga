@@ -50,6 +50,15 @@ class FileLock:
         except OSError as exc:
             handle.close()
             raise StateError(f"Unable to lock {self.path}: {exc}") from exc
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        except OSError as exc:
+            handle.close()
+            raise StateError(f"Unable to write lock metadata to {self.path}: {exc}") from exc
         self._handle = handle
 
     def release(self) -> None:
@@ -103,7 +112,7 @@ class StateStore:
 
         if not self.path.exists():
             return None
-        bad_name = f"{self.path.name}.bad-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        bad_name = f"{self.path.name}.bad-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
         bad_path = self.path.with_name(bad_name)
         try:
             os.replace(self.path, bad_path)
@@ -128,7 +137,10 @@ class StateStore:
             raise StateError(f"Unable to write state file {self.path}: {exc}") from exc
         finally:
             if temp_name and os.path.exists(temp_name):
-                os.unlink(temp_name)
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    logging.getLogger("stopliga.state").warning("state_temp_cleanup_failed", exc_info=True)
 
     def healthcheck(self, max_age_seconds: int) -> tuple[bool, str]:
         try:

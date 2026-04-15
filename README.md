@@ -160,5 +160,7 @@ STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
 
 ## Image
 
+- `ghcr.io/jcastro/stopliga:latest`
+- `ghcr.io/jcastro/stopliga:0.1.6`
 - `bluepr0/stopliga:latest`
-- `bluepr0/stopliga:0.1.5`
+- `bluepr0/stopliga:0.1.6`

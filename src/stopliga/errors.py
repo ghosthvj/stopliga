@@ -52,10 +52,22 @@ class StateError(StopLigaError):
 class PartialUpdateError(StopLigaError):
     """Raised when a multi-step remote update partially succeeds before failing."""
 
-    def __init__(self, failed_stage: str, completed_stages: tuple[str, ...], message: str):
+    def __init__(
+        self,
+        failed_stage: str,
+        completed_stages: tuple[str, ...],
+        message: str,
+        *,
+        rollback_attempted: bool = False,
+        rollback_completed: bool = False,
+        rollback_error: str | None = None,
+    ):
         super().__init__(message)
         self.failed_stage = failed_stage
         self.completed_stages = completed_stages
+        self.rollback_attempted = rollback_attempted
+        self.rollback_completed = rollback_completed
+        self.rollback_error = rollback_error
 
     @property
     def stage(self) -> str:

@@ -86,6 +86,16 @@ def _validate_feed_url(url: str, *, field_name: str, allow_private_hosts: bool) 
         raise ConfigError(f"{field_name} points to a private or local host; set feed_allow_private_hosts to override")
 
 
+def _validate_notification_url(url: str, *, field_name: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"}:
+        raise ConfigError(f"{field_name} must use http or https, not {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ConfigError(f"{field_name} must include a hostname")
+    if parsed.username or parsed.password:
+        raise ConfigError(f"{field_name} must not embed credentials")
+
+
 def _parse_csv_list(value: Any, *, field_name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -158,6 +168,10 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "gotify_priority": notifications.get("gotify_priority"),
         "telegram_bot_token": notifications.get("telegram_bot_token"),
         "telegram_chat_id": notifications.get("telegram_chat_id"),
+        "notification_timeout": notifications.get("timeout"),
+        "notification_retries": notifications.get("retries"),
+        "notification_verify_tls": notifications.get("verify_tls"),
+        "notification_ca_file": notifications.get("ca_file"),
     }
 
 
@@ -211,6 +225,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gotify-priority", type=int, default=None, help="Gotify priority")
     parser.add_argument("--telegram-bot-token", default=None, help="Telegram bot token")
     parser.add_argument("--telegram-chat-id", default=None, help="Telegram user/chat id")
+    parser.add_argument("--notification-timeout", type=float, default=None, help="Notification HTTP timeout in seconds")
+    parser.add_argument("--notification-retries", type=int, default=None, help="Notification retry count")
 
     run_group = parser.add_mutually_exclusive_group()
     run_group.add_argument("--once", action="store_true", default=None, help="Run a single sync and exit")
@@ -409,6 +425,19 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         telegram_chat_id=str(
             _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id)
         ) if _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id) is not None else None,
+        notification_timeout=_parse_float(
+            _first(args.notification_timeout, _env_value(env, "STOPLIGA_NOTIFICATION_TIMEOUT"), file_cfg.get("notification_timeout"), DEFAULTS.notification_timeout),
+            field_name="notification_timeout",
+        ),
+        notification_retries=_parse_int(
+            _first(args.notification_retries, _env_value(env, "STOPLIGA_NOTIFICATION_RETRIES"), file_cfg.get("notification_retries"), DEFAULTS.notification_retries),
+            field_name="notification_retries",
+        ),
+        notification_verify_tls=_parse_bool(
+            _first(_env_value(env, "STOPLIGA_NOTIFICATION_VERIFY_TLS"), file_cfg.get("notification_verify_tls"), DEFAULTS.notification_verify_tls),
+            field_name="notification_verify_tls",
+        ),
+        notification_ca_file=_parse_path(value, field_name="notification_ca_file") if (value := _first(_env_value(env, "STOPLIGA_NOTIFICATION_CA_FILE"), file_cfg.get("notification_ca_file"))) else None,
     )
 
     validate_config(config, validate_connection=validate and not args.healthcheck)
@@ -422,10 +451,18 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("retries must be >= 1")
     if config.request_timeout <= 0:
         raise ConfigError("request_timeout must be > 0")
+    if config.notification_timeout <= 0:
+        raise ConfigError("notification_timeout must be > 0")
     if config.interval_seconds <= 0 and config.run_mode == "loop":
         raise ConfigError("loop mode requires interval_seconds > 0")
     if config.max_destinations < 1:
         raise ConfigError("max_destinations must be >= 1")
+    if config.notification_retries < 1:
+        raise ConfigError("notification_retries must be >= 1")
+    if not config.route_name.strip():
+        raise ConfigError("route_name must not be empty")
+    if not config.site.strip():
+        raise ConfigError("site must not be empty")
     if config.invalid_entry_policy not in {"fail", "ignore"}:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if bool(config.vpn_name) != bool(config.target_clients):
@@ -434,6 +471,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("Telegram notifications require both STOPLIGA_TELEGRAM_BOT_TOKEN and STOPLIGA_TELEGRAM_CHAT_ID")
+    if config.gotify_url:
+        _validate_notification_url(config.gotify_url, field_name="gotify_url")
     _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
     _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
     if validate_connection:

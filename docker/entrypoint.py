@@ -15,7 +15,10 @@ def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None or value == "":
         return default
-    return int(value)
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return parsed
 
 
 def _candidate_paths() -> list[pathlib.Path]:
@@ -34,12 +37,16 @@ def _ensure_writable_paths(uid: int, gid: int) -> None:
         if path in seen:
             continue
         seen.add(path)
+        if path.exists() and path.is_symlink():
+            raise RuntimeError(f"Refusing to operate on symlinked path: {path}")
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 continue
         else:
             path.mkdir(parents=True, exist_ok=True)
+        if path.parent.exists() and path.parent.is_symlink():
+            raise RuntimeError(f"Refusing to operate on symlinked parent path: {path.parent}")
         try:
             os.chown(path, uid, gid)
         except PermissionError:

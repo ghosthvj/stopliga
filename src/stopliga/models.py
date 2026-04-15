@@ -54,6 +54,10 @@ class Config:
     gotify_priority: int = 5
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    notification_timeout: float = 10.0
+    notification_retries: int = 2
+    notification_verify_tls: bool = True
+    notification_ca_file: Path | None = None
 
     def has_unifi_auth(self) -> bool:
         return bool(self.host and ((self.api_key and self.api_key.strip()) or (self.username and self.password)))
@@ -161,6 +165,7 @@ class StateSnapshot:
     last_success_at: str | None
     last_error: str | None
     last_mode: str | None
+    last_sync_id: str | None
     last_route_id: str | None
     last_backend: str | None
     feed_hash: str | None
@@ -171,6 +176,9 @@ class StateSnapshot:
     consecutive_failures: int = 0
     partial_failure: bool = False
     last_error_stage: str | None = None
+    rollback_attempted: bool = False
+    rollback_completed: bool = False
+    rollback_error: str | None = None
     last_is_blocked: bool | None = None
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None

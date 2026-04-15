@@ -174,3 +174,43 @@ site = "default"
                     "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
                 },
             )
+
+    def test_empty_route_name_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_ROUTE_NAME": "   ",
+                },
+            )
+
+    def test_gotify_url_with_embedded_credentials_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_GOTIFY_URL": "https://user:pass@gotify.example",
+                    "STOPLIGA_GOTIFY_TOKEN": "token",
+                },
+            )
+
+    def test_notification_retries_must_be_positive(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NOTIFICATION_RETRIES": "0",
+                },
+            )
