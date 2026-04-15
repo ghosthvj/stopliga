@@ -38,6 +38,7 @@ Use an API key file if possible:
 
 ```dotenv
 UNIFI_HOST=10.0.1.1
+UNIFI_AUTH_MODE=api_key
 UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key
 UNIFI_SITE=default
 UNIFI_VERIFY_TLS=false
@@ -45,11 +46,14 @@ UNIFI_VERIFY_TLS=false
 STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
+STOPLIGA_MAX_RESPONSE_BYTES=2097152
 
 # Optional notifications
 # STOPLIGA_GOTIFY_URL=https://gotify.example.com
 # STOPLIGA_GOTIFY_TOKEN=replace-me
 # STOPLIGA_GOTIFY_PRIORITY=5
+# STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP=false
+# STOPLIGA_GOTIFY_VERIFY_TLS=true
 # STOPLIGA_TELEGRAM_BOT_TOKEN=123456:replace-me
 # STOPLIGA_TELEGRAM_CHAT_ID=123456789
 ```
@@ -66,6 +70,7 @@ If you prefer username/password:
 
 ```dotenv
 UNIFI_HOST=10.0.1.1
+UNIFI_AUTH_MODE=session
 UNIFI_USERNAME=admin
 UNIFI_PASSWORD=replace-me
 UNIFI_SITE=default
@@ -139,6 +144,14 @@ STOPLIGA_GOTIFY_URL=https://gotify.example.com
 STOPLIGA_GOTIFY_TOKEN=replace-me
 ```
 
+Gotify stays on its own TLS settings:
+
+```dotenv
+STOPLIGA_GOTIFY_URL=https://gotify.example.com
+STOPLIGA_GOTIFY_TOKEN=replace-me
+STOPLIGA_GOTIFY_VERIFY_TLS=true
+```
+
 ```dotenv
 STOPLIGA_TELEGRAM_BOT_TOKEN=123456:replace-me
 STOPLIGA_TELEGRAM_CHAT_ID=123456789
@@ -154,8 +167,14 @@ STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
 ## Notes
 
 - API key auth is preferred.
+- `UNIFI_AUTH_MODE=api_key` is the recommended production mode when you use an API key.
+- `UNIFI_AUTH_MODE=auto` is the compatibility mode that can fall back to username/password if the API key is rejected.
 - TLS verification is enabled by default.
 - `UNIFI_VERIFY_TLS=false` is only for local setups with self-signed certs.
+- Telegram notifications always verify TLS.
+- Gotify over plain HTTP is blocked unless `STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP=true`.
+- Large HTTP responses are capped by `STOPLIGA_MAX_RESPONSE_BYTES`.
+- If `reconciliation_required` is set in runtime state, StopLiga refuses new writes until the previous partial failure is reviewed.
 - If the route does not exist, StopLiga can bootstrap it, but day-to-day operation is only destination and enable/disable sync.
 
 ## Image

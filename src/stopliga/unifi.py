@@ -10,12 +10,12 @@ import re
 import ssl
 import urllib.error
 import urllib.request
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from .errors import AuthenticationError, ConfigError, DiscoveryError, DuplicateRouteError, NetworkError, PartialUpdateError, RemoteRequestError, RouteNotFoundError, StopLigaError, UnsupportedRouteShapeError
 from .logging_utils import log_event
-from .models import BootstrapPreview, Config, FeedSnapshot, SiteContext, UpdatePlan
-from .utils import canonicalize_ip_token, make_ssl_context, shorten_json, sleep_with_backoff, sort_ip_tokens
+from .models import Config, FeedSnapshot, SiteContext, UpdatePlan
+from .utils import canonicalize_ip_token, make_ssl_context, read_limited, shorten_json, sleep_with_backoff, sort_ip_tokens
 
 
 MAC_RE = re.compile(r"^[0-9a-fA-F]{2}([:-]?[0-9a-fA-F]{2}){5}$")
@@ -385,7 +385,7 @@ class UniFiClient:
         self.login_path: str | None = None
         self.network_prefix: str | None = None
         self.site_context: SiteContext | None = None
-        self.use_api_key = bool(config.api_key)
+        self.use_api_key = config.auth_mode != "session" and bool(config.api_key)
 
         cookie_jar = http.cookiejar.CookieJar()
         context = make_ssl_context(verify=config.unifi_verify_tls, ca_file=config.unifi_ca_file)
@@ -398,7 +398,10 @@ class UniFiClient:
     def base_url(self) -> str:
         if not self.config.host:
             raise ConfigError("host is required for local mode")
-        return f"https://{self.config.host}:{self.config.port}"
+        host = self.config.host
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"https://{host}:{self.config.port}"
 
     def _build_url(self, path: str) -> str:
         if path.startswith(("http://", "https://")):
@@ -446,7 +449,14 @@ class UniFiClient:
             try:
                 with self.opener.open(request, timeout=self.config.request_timeout) as response:
                     self._update_csrf_token(response.headers)
-                    raw = response.read()
+                    try:
+                        raw = read_limited(
+                            response,
+                            max_bytes=self.config.max_response_bytes,
+                            content_length=response.headers.get("Content-Length"),
+                        )
+                    except ValueError as exc:
+                        raise RemoteRequestError(f"{method} {path} returned an oversized response: {exc}") from exc
                     text = raw.decode("utf-8", errors="replace")
                     if response.status not in expected_statuses:
                         raise RemoteRequestError(f"{method} {path} returned {response.status}: {text[:500]}")
@@ -460,10 +470,24 @@ class UniFiClient:
                         raise RemoteRequestError(f"{method} {path} returned invalid JSON: {text[:500]}") from exc
             except urllib.error.HTTPError as exc:
                 try:
-                    body = exc.read().decode("utf-8", errors="replace")
+                    try:
+                        body_bytes = read_limited(
+                            exc,
+                            max_bytes=min(self.config.max_response_bytes, 256 * 1024),
+                            content_length=exc.headers.get("Content-Length") if exc.headers else None,
+                        )
+                    except ValueError:
+                        body = "<oversized error response>"
+                    else:
+                        body = body_bytes.decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
                     if self.use_api_key and exc.code in {401, 403}:
-                        if retry_on_auth and self.config.username and self.config.password:
+                        if (
+                            self.config.auth_mode == "auto"
+                            and retry_on_auth
+                            and self.config.username
+                            and self.config.password
+                        ):
                             log_event(self.logger, logging.WARNING, "unifi_api_key_fallback", path=path, status=exc.code)
                             self.use_api_key = False
                             self.logged_in = False
@@ -537,6 +561,8 @@ class UniFiClient:
             self.logged_in = True
             self.login_path = None
             return
+        if self.config.auth_mode == "api_key":
+            raise AuthenticationError("auth_mode=api_key requires a valid UNIFI_API_KEY")
 
         if self.logged_in and not force:
             return
@@ -573,6 +599,7 @@ class UniFiClient:
 
         if self.network_prefix is not None:
             return self.network_prefix
+        auth_error: AuthenticationError | None = None
         for prefix in ("/proxy/network", ""):
             try:
                 payload = self.request("GET", f"{prefix}/api/self/sites")
@@ -580,8 +607,12 @@ class UniFiClient:
                     self.network_prefix = prefix
                     log_event(self.logger, logging.INFO, "network_prefix_detected", prefix=prefix or "/")
                     return prefix
+            except AuthenticationError as exc:
+                auth_error = exc
             except StopLigaError:
                 continue
+        if auth_error is not None:
+            raise auth_error
         raise DiscoveryError("Unable to detect UniFi Network API prefix")
 
     def get_network_sites(self) -> list[dict[str, Any]]:
@@ -951,11 +982,12 @@ class BaseRouteBackend:
         return payload, current_destinations, changed_fields
 
     def build_plan(self, endpoint: str, route_record: dict[str, Any], desired_ips: Sequence[str], desired_enabled: bool) -> UpdatePlan:
-        route_payload, current_destinations, route_changed_fields = self._build_route_payload_for_destinations(
+        route_payload_raw, current_destinations, route_changed_fields = self._build_route_payload_for_destinations(
             route_record,
             desired_ips,
             allow_missing=False,
         )
+        route_payload: dict[str, Any] | None = route_payload_raw
         linked_list_id = self._detect_linked_list_id(route_record)
         linked_list_endpoint = None
         linked_list_payload = None
@@ -976,6 +1008,8 @@ class BaseRouteBackend:
 
         current_enabled = route_record.get("enabled") if isinstance(route_record.get("enabled"), bool) else None
         if current_enabled != desired_enabled:
+            if route_payload is None:
+                route_payload = build_route_update_template(route_record)
             route_payload["enabled"] = desired_enabled
             route_changed_fields.append("enabled")
         if not route_changed_fields:

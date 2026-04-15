@@ -15,7 +15,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
-from .utils import canonicalize_ip_token, make_ssl_context, sleep_with_backoff, stable_hash
+from .utils import canonicalize_ip_token, make_ssl_context, read_limited, sleep_with_backoff, stable_hash
 
 
 @dataclass(frozen=True)
@@ -97,6 +97,7 @@ def fetch_text(
     timeout: float,
     retries: int,
     verify_tls: bool,
+    max_bytes: int,
     ca_file: Any = None,
 ) -> str:
     """Fetch a text payload over HTTP(S) with retries and explicit TLS control."""
@@ -111,7 +112,15 @@ def fetch_text(
         request = urllib.request.Request(url, headers={"Accept": "application/json, text/plain;q=0.9, */*;q=0.1"})
         try:
             with opener.open(request, timeout=timeout) as response:
-                return response.read().decode("utf-8", errors="replace")
+                try:
+                    body = read_limited(
+                        response,
+                        max_bytes=max_bytes,
+                        content_length=response.headers.get("Content-Length"),
+                    )
+                except ValueError as exc:
+                    raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
+                return body.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             last_error = exc
             retryable_http = exc.code in {408, 429, 500, 502, 503, 504}
@@ -179,6 +188,7 @@ def _resolve_github_commit_sha(
     timeout: float,
     retries: int,
     verify_tls: bool,
+    max_bytes: int = 256 * 1024,
     ca_file: Any = None,
 ) -> str:
     api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{quote(ref, safe='')}"
@@ -187,6 +197,7 @@ def _resolve_github_commit_sha(
         timeout=timeout,
         retries=retries,
         verify_tls=verify_tls,
+        max_bytes=max_bytes,
         ca_file=ca_file,
     )
     try:
@@ -217,6 +228,7 @@ def _resolve_consistent_feed_urls(config: Config) -> tuple[str, str, str | None]
             timeout=config.request_timeout,
             retries=config.retries,
             verify_tls=config.feed_verify_tls,
+            max_bytes=config.max_response_bytes,
             ca_file=config.feed_ca_file,
         )
     except (InvalidFeedError, NetworkError) as exc:
@@ -257,6 +269,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         timeout=config.request_timeout,
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
+        max_bytes=config.max_response_bytes,
         ca_file=config.feed_ca_file,
     )
     raw_status, is_blocked = parse_status_payload(raw_status_text)
@@ -266,6 +279,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         timeout=config.request_timeout,
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
+        max_bytes=config.max_response_bytes,
         ca_file=config.feed_ca_file,
     )
     destinations, raw_lines, invalid_entries = parse_ip_list(

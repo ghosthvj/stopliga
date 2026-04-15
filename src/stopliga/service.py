@@ -6,7 +6,7 @@ import logging
 from uuid import uuid4
 from threading import Event
 
-from .errors import AuthenticationError, ConfigError, PartialUpdateError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
+from .errors import AuthenticationError, ConfigError, PartialUpdateError, ReconciliationRequiredError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
@@ -14,6 +14,7 @@ from .notifier import send_notifications
 from .state import StateStore, utcnow_iso
 from .unifi import (
     ALL_CLIENTS_TARGET,
+    BaseRouteBackend,
     UniFiClient,
     apply_plan,
     build_direct_bootstrap_payload,
@@ -24,7 +25,7 @@ from .unifi import (
 )
 
 
-FATAL_LOOP_ERRORS = (AuthenticationError, ConfigError, StateError, UnsupportedRouteShapeError)
+FATAL_LOOP_ERRORS = (AuthenticationError, ConfigError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError)
 
 
 class StopLigaService:
@@ -90,6 +91,26 @@ class StopLigaService:
         return {}
 
     def _write_bootstrap_guard(self, result: SyncResult) -> None:
+        self._write_bootstrap_guard_values(
+            bootstrap_source=result.bootstrap_source,
+            bootstrap_network_id=result.bootstrap_network_id,
+            bootstrap_target_macs=result.bootstrap_target_macs,
+        )
+
+    def _clear_bootstrap_guard(self) -> None:
+        self._write_bootstrap_guard_values(
+            bootstrap_source=None,
+            bootstrap_network_id=None,
+            bootstrap_target_macs=(),
+        )
+
+    def _write_bootstrap_guard_values(
+        self,
+        *,
+        bootstrap_source: str | None,
+        bootstrap_network_id: str | None,
+        bootstrap_target_macs: tuple[str, ...],
+    ) -> None:
         snapshot = StateSnapshot(
             status="guard",
             run_mode=self.config.run_mode,
@@ -108,9 +129,9 @@ class StopLigaService:
             created=False,
             dry_run=False,
             last_is_blocked=None,
-            bootstrap_source=result.bootstrap_source,
-            bootstrap_network_id=result.bootstrap_network_id,
-            bootstrap_target_macs=result.bootstrap_target_macs,
+            bootstrap_source=bootstrap_source,
+            bootstrap_network_id=bootstrap_network_id,
+            bootstrap_target_macs=bootstrap_target_macs,
         )
         self.bootstrap_guard_store.write(snapshot)
 
@@ -126,6 +147,7 @@ class StopLigaService:
         rollback_completed: bool = False,
         rollback_error: str | None = None,
         sync_id: str | None = None,
+        reconciliation_required: bool = False,
     ) -> None:
         now = utcnow_iso()
         previous = self._load_runtime_state()
@@ -138,14 +160,14 @@ class StopLigaService:
             route_name=self.config.route_name,
             site=self.config.site,
             last_attempt_at=now,
-            last_success_at=now if status in {"success", "dry_run"} else previous.get("last_success_at"),
+            last_success_at=now if status in {"success", "dry_run"} else self._optional_str(previous, "last_success_at"),
             last_error=error,
-            last_mode=result.mode if result else previous.get("last_mode"),
-            last_sync_id=sync_id or previous.get("last_sync_id"),
-            last_route_id=result.route_id if result else previous.get("last_route_id"),
-            last_backend=result.backend_name if result else previous.get("last_backend"),
-            feed_hash=result.feed_hash if result else previous.get("feed_hash"),
-            destinations_hash=result.destinations_hash if result else previous.get("destinations_hash"),
+            last_mode=result.mode if result else self._optional_str(previous, "last_mode"),
+            last_sync_id=sync_id or self._optional_str(previous, "last_sync_id"),
+            last_route_id=result.route_id if result else self._optional_str(previous, "last_route_id"),
+            last_backend=result.backend_name if result else self._optional_str(previous, "last_backend"),
+            feed_hash=result.feed_hash if result else self._optional_str(previous, "feed_hash"),
+            destinations_hash=result.destinations_hash if result else self._optional_str(previous, "destinations_hash"),
             changed=result.changed if result else False,
             created=result.created if result else False,
             dry_run=result.dry_run if result else False,
@@ -155,12 +177,34 @@ class StopLigaService:
             rollback_attempted=rollback_attempted,
             rollback_completed=rollback_completed,
             rollback_error=rollback_error,
-            last_is_blocked=result.is_blocked if result else previous.get("last_is_blocked"),
-            bootstrap_source=result.bootstrap_source if result else previous.get("bootstrap_source"),
-            bootstrap_network_id=result.bootstrap_network_id if result else previous.get("bootstrap_network_id"),
-            bootstrap_target_macs=result.bootstrap_target_macs if result else tuple(previous.get("bootstrap_target_macs", [])),
+            reconciliation_required=reconciliation_required,
+            last_is_blocked=result.is_blocked if result else self._optional_bool(previous, "last_is_blocked"),
+            bootstrap_source=result.bootstrap_source if result else self._optional_str(previous, "bootstrap_source"),
+            bootstrap_network_id=result.bootstrap_network_id if result else self._optional_str(previous, "bootstrap_network_id"),
+            bootstrap_target_macs=result.bootstrap_target_macs if result else self._string_tuple(previous, "bootstrap_target_macs"),
         )
         self.state_store.write(snapshot)
+
+    @staticmethod
+    def _optional_str(payload: dict[str, object], key: str) -> str | None:
+        value = payload.get(key)
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _optional_bool(payload: dict[str, object], key: str) -> bool | None:
+        value = payload.get(key)
+        return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _string_tuple(payload: dict[str, object], key: str) -> tuple[str, ...]:
+        value = payload.get(key)
+        if not isinstance(value, list):
+            return ()
+        items: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                items.append(item.strip())
+        return tuple(items)
 
     def _bootstrap_requires_manual_review(self, source: str | None) -> bool:
         return bool(source and source.startswith("auto-bootstrap"))
@@ -185,7 +229,7 @@ class StopLigaService:
         route_network_id = route_record.get("network_id")
         if not isinstance(route_network_id, str) or route_network_id.strip() != str(state.get("bootstrap_network_id", "")).strip():
             return False
-        saved_macs = tuple(sorted(str(item).strip().lower() for item in state.get("bootstrap_target_macs", []) if str(item).strip()))
+        saved_macs = tuple(sorted(item.lower() for item in self._string_tuple(state, "bootstrap_target_macs")))
         return saved_macs == self._route_target_macs(route_record)
 
     def _build_result(
@@ -260,7 +304,7 @@ class StopLigaService:
     def _plan_route_update(
         self,
         *,
-        backend,
+        backend: BaseRouteBackend,
         endpoint: str,
         route_record: dict[str, object],
         feed_snapshot: FeedSnapshot,
@@ -313,7 +357,7 @@ class StopLigaService:
         self,
         client: UniFiClient,
         desired_ips: list[str],
-    ) -> tuple[object, BootstrapPreview]:
+    ) -> tuple[BaseRouteBackend, BootstrapPreview]:
         create_backend = choose_create_backend(client, client.resolve_site_context())
         if self.config.vpn_name and self.config.target_clients:
             vpn_network = client.resolve_vpn_network(self.config.vpn_name)
@@ -393,6 +437,12 @@ class StopLigaService:
                     bootstrap_target_macs=self._route_target_macs(preview.payload),
                 )
             applied_preview = preview
+            if preview.source.startswith("auto-bootstrap"):
+                self._write_bootstrap_guard_values(
+                    bootstrap_source=preview.source,
+                    bootstrap_network_id=str(preview.payload.get("network_id") or "") or None,
+                    bootstrap_target_macs=self._route_target_macs(preview.payload),
+                )
             try:
                 endpoint, route_record = bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
@@ -411,6 +461,7 @@ class StopLigaService:
                     try:
                         endpoint, route_record = bootstrap_backend.create_route(fallback_payload)
                     except StopLigaError as fallback_exc:
+                        self._clear_bootstrap_guard()
                         raise RouteNotFoundError(
                             f"Route {self.config.route_name!r} not found and bootstrap failed. "
                             f"Primary error: {exc}. Fallback error: {fallback_exc}"
@@ -420,7 +471,13 @@ class StopLigaService:
                         payload=fallback_payload,
                         source="auto-bootstrap-device-fallback",
                     )
+                    self._write_bootstrap_guard_values(
+                        bootstrap_source=applied_preview.source,
+                        bootstrap_network_id=str(applied_preview.payload.get("network_id") or "") or None,
+                        bootstrap_target_macs=self._route_target_macs(applied_preview.payload),
+                    )
                 else:
+                    self._clear_bootstrap_guard()
                     raise RouteNotFoundError(
                         f"Route {self.config.route_name!r} not found and bootstrap via {preview.source} failed: {exc}"
                     ) from exc
@@ -455,8 +512,21 @@ class StopLigaService:
                 mode="local",
                 dry_run=self.config.dry_run,
             )
+            reconciliation_pending = False
             try:
                 previous_runtime_state = self._load_runtime_state()
+                reconciliation_pending = bool(previous_runtime_state.get("reconciliation_required"))
+                if reconciliation_pending:
+                    log_event(
+                        self.logger,
+                        logging.WARNING,
+                        "reconciliation_pending",
+                        last_error_stage=previous_runtime_state.get("last_error_stage"),
+                        rollback_completed=previous_runtime_state.get("rollback_completed"),
+                    )
+                    raise ReconciliationRequiredError(
+                        "Previous sync left the remote state requiring reconciliation; refusing new writes"
+                    )
                 feed_snapshot = load_feed_snapshot(self.config)
                 result = self._run_once(feed_snapshot)
                 self._write_state(status="dry_run" if result.dry_run else "success", result=result, sync_id=sync_id)
@@ -485,6 +555,12 @@ class StopLigaService:
                         rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
                         rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
                         rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
+                        reconciliation_required=(
+                            reconciliation_pending
+                            or
+                            isinstance(exc, PartialUpdateError)
+                            and (not exc.rollback_attempted or not exc.rollback_completed)
+                        ),
                         sync_id=sync_id,
                     )
                 except StateError as state_exc:
@@ -508,6 +584,10 @@ class StopLigaService:
                         rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
                         rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
                         rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
+                        reconciliation_required=(
+                            isinstance(exc, PartialUpdateError)
+                            and (not exc.rollback_attempted or not exc.rollback_completed)
+                        ),
                         sync_id=None,
                     )
                 except StateError as state_exc:

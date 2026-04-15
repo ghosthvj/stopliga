@@ -150,6 +150,8 @@ class StateStore:
         last_success = state.get("last_success_at")
         status = state.get("status")
         consecutive_failures = state.get("consecutive_failures", 0)
+        if state.get("reconciliation_required"):
+            return False, "runtime state requires reconciliation before further writes"
         if not last_success:
             return False, "no recent successful run in state file"
         if status not in {"success", "dry_run"}:

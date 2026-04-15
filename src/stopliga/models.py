@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
+AuthMode = Literal["auto", "api_key", "session"]
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class Config:
     run_mode: RunMode = "once"
     host: str | None = None
     port: int = 443
+    auth_mode: AuthMode = "auto"
     api_key: str | None = None
     username: str | None = None
     password: str | None = None
@@ -37,6 +39,7 @@ class Config:
     strict_feed_consistency: bool = True
     request_timeout: float = 15.0
     retries: int = 4
+    max_response_bytes: int = 2 * 1024 * 1024
     interval_seconds: int = 300
     dry_run: bool = False
     invalid_entry_policy: InvalidEntryPolicy = "fail"
@@ -58,9 +61,22 @@ class Config:
     notification_retries: int = 2
     notification_verify_tls: bool = True
     notification_ca_file: Path | None = None
+    gotify_verify_tls: bool | None = None
+    gotify_ca_file: Path | None = None
+    gotify_allow_plain_http: bool = False
+    telegram_verify_tls: bool | None = None
+    telegram_ca_file: Path | None = None
 
     def has_unifi_auth(self) -> bool:
-        return bool(self.host and ((self.api_key and self.api_key.strip()) or (self.username and self.password)))
+        has_api_key = bool(self.api_key and self.api_key.strip())
+        has_session = bool(self.username and self.password)
+        if not self.host:
+            return False
+        if self.auth_mode == "api_key":
+            return has_api_key
+        if self.auth_mode == "session":
+            return has_session
+        return has_api_key or has_session
 
     def has_notifications(self) -> bool:
         return bool(
@@ -179,6 +195,7 @@ class StateSnapshot:
     rollback_attempted: bool = False
     rollback_completed: bool = False
     rollback_error: str | None = None
+    reconciliation_required: bool = False
     last_is_blocked: bool | None = None
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None

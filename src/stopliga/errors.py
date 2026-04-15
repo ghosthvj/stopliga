@@ -49,6 +49,19 @@ class StateError(StopLigaError):
     """Raised when state persistence or lock management fails."""
 
 
+class NotificationDeliveryError(StopLigaError):
+    """Raised when one or more notification providers fail."""
+
+    def __init__(self, failures: dict[str, str]):
+        self.failures = failures
+        joined = " | ".join(f"{provider}: {error}" for provider, error in failures.items())
+        super().__init__(f"Notification delivery failed: {joined}")
+
+
+class ReconciliationRequiredError(StopLigaError):
+    """Raised when runtime state indicates a previous partial failure still needs attention."""
+
+
 class PartialUpdateError(StopLigaError):
     """Raised when a multi-step remote update partially succeeds before failing."""
 

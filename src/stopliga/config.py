@@ -7,11 +7,11 @@ import ipaddress
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 from urllib.parse import urlparse
 
 from .errors import ConfigError
-from .models import Config
+from .models import AuthMode, Config, InvalidEntryPolicy, RunMode
 
 
 DEFAULTS = Config()
@@ -51,6 +51,33 @@ def _parse_path(value: Any, *, field_name: str) -> Path:
     if isinstance(value, str) and value.strip():
         return Path(value).expanduser()
     raise ConfigError(f"Invalid path value for {field_name}: {value!r}")
+
+
+def _validate_unifi_host(host: str) -> None:
+    candidate = host.strip()
+    if not candidate:
+        raise ConfigError("UNIFI_HOST must not be empty")
+    if candidate != host:
+        raise ConfigError("UNIFI_HOST must not contain leading or trailing whitespace")
+    if "://" in candidate or "/" in candidate or "@" in candidate or "?" in candidate or "#" in candidate:
+        raise ConfigError("UNIFI_HOST must be a hostname or IP address without scheme, path or credentials")
+    if candidate.startswith("[") and candidate.endswith("]"):
+        inner = candidate[1:-1]
+        try:
+            ipaddress.IPv6Address(inner)
+        except ipaddress.AddressValueError as exc:
+            raise ConfigError(f"UNIFI_HOST contains an invalid bracketed IPv6 address: {candidate!r}") from exc
+        return
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        if any(ch not in allowed for ch in candidate):
+            raise ConfigError(f"UNIFI_HOST contains unsupported characters: {candidate!r}")
+        if ".." in candidate or candidate.startswith(".") or candidate.endswith(".") or candidate.startswith("-") or candidate.endswith("-"):
+            raise ConfigError(f"UNIFI_HOST is not a valid hostname: {candidate!r}")
+    else:
+        return
 
 
 def _normalize_destination_field(value: Any) -> str:
@@ -96,6 +123,13 @@ def _validate_notification_url(url: str, *, field_name: str) -> None:
         raise ConfigError(f"{field_name} must not embed credentials")
 
 
+def _validate_gotify_url(url: str, *, allow_plain_http: bool) -> None:
+    _validate_notification_url(url, field_name="gotify_url")
+    parsed = urlparse(url)
+    if parsed.scheme == "http" and not allow_plain_http:
+        raise ConfigError("gotify_url must use https unless STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP=true")
+
+
 def _parse_csv_list(value: Any, *, field_name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -134,6 +168,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "run_mode": app.get("run_mode"),
         "host": unifi.get("host"),
         "port": unifi.get("port"),
+        "auth_mode": unifi.get("auth_mode"),
         "api_key": unifi.get("api_key"),
         "username": unifi.get("username"),
         "password": unifi.get("password"),
@@ -151,6 +186,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "strict_feed_consistency": feeds.get("strict_consistency"),
         "request_timeout": app.get("request_timeout"),
         "retries": app.get("retries"),
+        "max_response_bytes": app.get("max_response_bytes"),
         "interval_seconds": app.get("interval_seconds"),
         "dry_run": app.get("dry_run"),
         "invalid_entry_policy": app.get("invalid_entry_policy"),
@@ -172,6 +208,11 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "notification_retries": notifications.get("retries"),
         "notification_verify_tls": notifications.get("verify_tls"),
         "notification_ca_file": notifications.get("ca_file"),
+        "gotify_verify_tls": notifications.get("gotify_verify_tls"),
+        "gotify_ca_file": notifications.get("gotify_ca_file"),
+        "gotify_allow_plain_http": notifications.get("gotify_allow_plain_http"),
+        "telegram_verify_tls": notifications.get("telegram_verify_tls"),
+        "telegram_ca_file": notifications.get("telegram_ca_file"),
     }
 
 
@@ -186,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--healthcheck", action="store_true", help="Validate recent state file freshness")
     parser.add_argument("--host", default=None, help="UniFi console host or IP for local mode")
     parser.add_argument("--port", type=int, default=None, help="UniFi HTTPS port for local mode")
+    parser.add_argument("--auth-mode", choices=["auto", "api_key", "session"], default=None, help="UniFi authentication mode")
     parser.add_argument("--api-key", default=None, help="UniFi local API key")
     parser.add_argument("--username", default=None, help="UniFi local username")
     parser.add_argument("--password", default=None, help="UniFi local password")
@@ -209,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-timeout", type=float, default=None, help="HTTP timeout in seconds")
     parser.add_argument("--retries", type=int, default=None, help="Retry count for transient network errors")
     parser.add_argument("--max-destinations", type=int, default=None, help="Safety ceiling for IP entries")
+    parser.add_argument("--max-response-bytes", type=int, default=None, help="Maximum HTTP response body size in bytes")
     parser.add_argument("--health-max-age", dest="health_max_age_seconds", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true", default=None, help="Compute changes without writing")
     parser.add_argument(
@@ -312,9 +355,13 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
     )
 
     config = Config(
-        run_mode=_normalize_run_mode(args, env, file_cfg),
+        run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
+        auth_mode=cast(
+            AuthMode,
+            str(_first(args.auth_mode, _env_value(env, "UNIFI_AUTH_MODE"), file_cfg.get("auth_mode"), DEFAULTS.auth_mode)),
+        ),
         api_key=_first(
             args.api_key,
             _env_secret_first(env, field_name="api_key", key="UNIFI_API_KEY", key_file="UNIFI_API_KEY_FILE"),
@@ -367,6 +414,10 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             _first(args.retries, _env_value(env, "STOPLIGA_RETRIES"), file_cfg.get("retries"), DEFAULTS.retries),
             field_name="retries",
         ),
+        max_response_bytes=_parse_int(
+            _first(args.max_response_bytes, _env_value(env, "STOPLIGA_MAX_RESPONSE_BYTES"), file_cfg.get("max_response_bytes"), DEFAULTS.max_response_bytes),
+            field_name="max_response_bytes",
+        ),
         interval_seconds=_parse_int(
             _first(args.interval_seconds, _env_value(env, "STOPLIGA_SYNC_INTERVAL_SECONDS"), file_cfg.get("interval_seconds"), DEFAULTS.interval_seconds),
             field_name="interval_seconds",
@@ -375,8 +426,16 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             _first(args.dry_run, _env_value(env, "STOPLIGA_DRY_RUN"), file_cfg.get("dry_run"), DEFAULTS.dry_run),
             field_name="dry_run",
         ),
-        invalid_entry_policy=str(
-            _first(args.invalid_entry_policy, _env_value(env, "STOPLIGA_INVALID_ENTRY_POLICY"), file_cfg.get("invalid_entry_policy"), DEFAULTS.invalid_entry_policy)
+        invalid_entry_policy=cast(
+            InvalidEntryPolicy,
+            str(
+                _first(
+                    args.invalid_entry_policy,
+                    _env_value(env, "STOPLIGA_INVALID_ENTRY_POLICY"),
+                    file_cfg.get("invalid_entry_policy"),
+                    DEFAULTS.invalid_entry_policy,
+                )
+            ),
         ),
         max_destinations=_parse_int(
             _first(args.max_destinations, _env_value(env, "STOPLIGA_MAX_DESTINATIONS"), file_cfg.get("max_destinations"), DEFAULTS.max_destinations),
@@ -438,6 +497,22 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             field_name="notification_verify_tls",
         ),
         notification_ca_file=_parse_path(value, field_name="notification_ca_file") if (value := _first(_env_value(env, "STOPLIGA_NOTIFICATION_CA_FILE"), file_cfg.get("notification_ca_file"))) else None,
+        gotify_verify_tls=(
+            _parse_bool(value, field_name="gotify_verify_tls")
+            if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_VERIFY_TLS"), file_cfg.get("gotify_verify_tls"))) is not None
+            else None
+        ),
+        gotify_ca_file=_parse_path(value, field_name="gotify_ca_file") if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_CA_FILE"), file_cfg.get("gotify_ca_file"))) else None,
+        gotify_allow_plain_http=_parse_bool(
+            _first(_env_value(env, "STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP"), file_cfg.get("gotify_allow_plain_http"), DEFAULTS.gotify_allow_plain_http),
+            field_name="gotify_allow_plain_http",
+        ),
+        telegram_verify_tls=(
+            _parse_bool(value, field_name="telegram_verify_tls")
+            if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_VERIFY_TLS"), file_cfg.get("telegram_verify_tls"))) is not None
+            else None
+        ),
+        telegram_ca_file=_parse_path(value, field_name="telegram_ca_file") if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_CA_FILE"), file_cfg.get("telegram_ca_file"))) else None,
     )
 
     validate_config(config, validate_connection=validate and not args.healthcheck)
@@ -449,8 +524,12 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
 
     if config.retries < 1:
         raise ConfigError("retries must be >= 1")
+    if config.auth_mode not in {"auto", "api_key", "session"}:
+        raise ConfigError(f"auth_mode must be auto|api_key|session, not {config.auth_mode!r}")
     if config.request_timeout <= 0:
         raise ConfigError("request_timeout must be > 0")
+    if config.max_response_bytes < 1024:
+        raise ConfigError("max_response_bytes must be >= 1024")
     if config.notification_timeout <= 0:
         raise ConfigError("notification_timeout must be > 0")
     if config.interval_seconds <= 0 and config.run_mode == "loop":
@@ -471,8 +550,17 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("Telegram notifications require both STOPLIGA_TELEGRAM_BOT_TOKEN and STOPLIGA_TELEGRAM_CHAT_ID")
+    if validate_connection:
+        _validate_unifi_host(config.host or "")
+    if config.auth_mode == "api_key" and not (config.api_key and config.api_key.strip()):
+        raise ConfigError("auth_mode=api_key requires UNIFI_API_KEY")
+    if config.auth_mode == "session" and not (config.username and config.password):
+        raise ConfigError("auth_mode=session requires UNIFI_USERNAME and UNIFI_PASSWORD")
     if config.gotify_url:
-        _validate_notification_url(config.gotify_url, field_name="gotify_url")
+        _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
+    if config.telegram_bot_token:
+        if config.telegram_verify_tls is False:
+            raise ConfigError("telegram_verify_tls=false is not supported; Telegram notifications must verify TLS")
     _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
     _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
     if validate_connection:

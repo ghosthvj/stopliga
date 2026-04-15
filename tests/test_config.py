@@ -3,11 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-import sys
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -68,6 +68,33 @@ site = "default"
         self.assertEqual(config.api_key, "test-api-key")
         self.assertIsNone(config.username)
         self.assertIsNone(config.password)
+
+    def test_auth_mode_session_requires_username_and_password(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_AUTH_MODE": "session",
+                    "UNIFI_API_KEY": "test-api-key",
+                },
+            )
+
+    def test_auth_mode_api_key_requires_api_key(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_AUTH_MODE": "api_key",
+                    "UNIFI_USERNAME": "user",
+                    "UNIFI_PASSWORD": "pass",
+                },
+            )
 
     def test_partial_bootstrap_configuration_is_rejected(self) -> None:
         parser = build_parser()
@@ -212,5 +239,71 @@ site = "default"
                     "UNIFI_HOST": "10.0.0.2",
                     "UNIFI_API_KEY": "test-api-key",
                     "STOPLIGA_NOTIFICATION_RETRIES": "0",
+                },
+            )
+
+    def test_invalid_unifi_host_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "https://10.0.0.2/controller",
+                    "UNIFI_API_KEY": "test-api-key",
+                },
+            )
+
+    def test_ipv6_unifi_host_is_accepted(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "2001:db8::1",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertEqual(config.host, "2001:db8::1")
+
+    def test_gotify_plain_http_requires_explicit_override(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_GOTIFY_URL": "http://gotify.example",
+                    "STOPLIGA_GOTIFY_TOKEN": "token",
+                },
+            )
+
+    def test_telegram_tls_cannot_be_disabled(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test",
+                    "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
+                    "STOPLIGA_TELEGRAM_VERIFY_TLS": "false",
+                },
+            )
+
+    def test_max_response_bytes_must_have_safe_floor(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_MAX_RESPONSE_BYTES": "512",
                 },
             )

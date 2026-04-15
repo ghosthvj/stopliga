@@ -21,25 +21,25 @@ def _env_int(name: str, default: int) -> int:
     return parsed
 
 
-def _candidate_paths() -> list[pathlib.Path]:
+def _candidate_paths() -> list[tuple[pathlib.Path, bool]]:
     configured = [
-        pathlib.Path(os.environ.get("STOPLIGA_STATE_FILE", "/data/state.json")),
-        pathlib.Path(os.environ.get("STOPLIGA_LOCK_FILE", "/data/stopliga.lock")),
-        pathlib.Path(os.environ.get("STOPLIGA_BOOTSTRAP_GUARD_FILE", "/data/bootstrap_guard.json")),
+        (pathlib.Path(os.environ.get("STOPLIGA_STATE_FILE", "/data/state.json")), True),
+        (pathlib.Path(os.environ.get("STOPLIGA_LOCK_FILE", "/data/stopliga.lock")), True),
+        (pathlib.Path(os.environ.get("STOPLIGA_BOOTSTRAP_GUARD_FILE", "/data/bootstrap_guard.json")), True),
     ]
-    parents = [path.parent for path in configured]
+    parents = [(path.parent, False) for path, _ in configured]
     return parents + configured
 
 
 def _ensure_writable_paths(uid: int, gid: int) -> None:
     seen: set[pathlib.Path] = set()
-    for path in _candidate_paths():
+    for path, is_file in _candidate_paths():
         if path in seen:
             continue
         seen.add(path)
         if path.exists() and path.is_symlink():
             raise RuntimeError(f"Refusing to operate on symlinked path: {path}")
-        if path.suffix:
+        if is_file:
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 continue

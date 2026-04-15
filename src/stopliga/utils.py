@@ -65,6 +65,33 @@ def make_ssl_context(*, verify: bool, ca_file: Path | None = None) -> ssl.SSLCon
     return context
 
 
+def read_limited(stream: Any, *, max_bytes: int, content_length: str | None = None) -> bytes:
+    """Read a response body with a hard safety ceiling."""
+
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be >= 1")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        else:
+            if declared is not None and declared > max_bytes:
+                raise ValueError(f"response content-length {declared} exceeds safety limit {max_bytes}")
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(min(65536, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"response body exceeds safety limit {max_bytes}")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def ensure_parent_dir(path: Path) -> None:
     """Create parent directories for a file path when needed."""
 

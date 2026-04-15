@@ -5,11 +5,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-import sys
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -101,6 +101,22 @@ class StateStoreTests(unittest.TestCase):
             healthy, message = store.healthcheck(60)
             self.assertFalse(healthy)
             self.assertIn("consecutive_failures=3", message)
+
+    def test_healthcheck_rejects_reconciliation_required_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+            recent = datetime.now(timezone.utc) - timedelta(seconds=10)
+            store.path.write_text(
+                f"""{{
+                  "status": "success",
+                  "reconciliation_required": true,
+                  "last_success_at": "{recent.isoformat()}"
+                }}""",
+                encoding="utf-8",
+            )
+            healthy, message = store.healthcheck(60)
+            self.assertFalse(healthy)
+            self.assertIn("reconciliation", message)
 
 
 class FeedLoadingTests(unittest.TestCase):
