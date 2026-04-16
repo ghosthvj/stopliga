@@ -200,6 +200,8 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "gotify_priority": notifications.get("gotify_priority"),
         "telegram_bot_token": notifications.get("telegram_bot_token"),
         "telegram_chat_id": notifications.get("telegram_chat_id"),
+        "telegram_group_id": notifications.get("telegram_group_id"),
+        "telegram_topic_id": notifications.get("telegram_topic_id"),
         "notification_timeout": notifications.get("timeout"),
         "notification_retries": notifications.get("retries"),
         "notification_verify_tls": notifications.get("verify_tls"),
@@ -260,6 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gotify-priority", type=int, default=None, help="Gotify priority")
     parser.add_argument("--telegram-bot-token", default=None, help="Telegram bot token")
     parser.add_argument("--telegram-chat-id", default=None, help="Telegram user/chat id")
+    parser.add_argument("--telegram-group-id", default=None, help="Telegram group or supergroup id")
+    parser.add_argument("--telegram-topic-id", type=int, default=None, help="Telegram forum topic id")
     parser.add_argument("--notification-timeout", type=float, default=None, help="Notification HTTP timeout in seconds")
     parser.add_argument("--notification-retries", type=int, default=None, help="Notification retry count")
 
@@ -447,6 +451,13 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         telegram_chat_id=str(
             _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id)
         ) if _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id) is not None else None,
+        telegram_group_id=str(
+            _first(args.telegram_group_id, _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"), file_cfg.get("telegram_group_id"), DEFAULTS.telegram_group_id)
+        ) if _first(args.telegram_group_id, _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"), file_cfg.get("telegram_group_id"), DEFAULTS.telegram_group_id) is not None else None,
+        telegram_topic_id=_parse_int(
+            _first(args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")),
+            field_name="telegram_topic_id",
+        ) if _first(args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")) is not None else None,
         notification_timeout=_parse_float(
             _first(args.notification_timeout, _env_value(env, "STOPLIGA_NOTIFICATION_TIMEOUT"), file_cfg.get("notification_timeout"), DEFAULTS.notification_timeout),
             field_name="notification_timeout",
@@ -509,8 +520,17 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
     if bool(config.gotify_url) != bool(config.gotify_token):
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
-    if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
-        raise ConfigError("Telegram notifications require both STOPLIGA_TELEGRAM_BOT_TOKEN and STOPLIGA_TELEGRAM_CHAT_ID")
+    if config.telegram_chat_id and config.telegram_group_id:
+        raise ConfigError("Set either STOPLIGA_TELEGRAM_CHAT_ID or STOPLIGA_TELEGRAM_GROUP_ID, not both")
+    telegram_target = config.resolved_telegram_chat_id()
+    if bool(config.telegram_bot_token) != bool(telegram_target):
+        raise ConfigError(
+            "Telegram notifications require STOPLIGA_TELEGRAM_BOT_TOKEN and either STOPLIGA_TELEGRAM_CHAT_ID or STOPLIGA_TELEGRAM_GROUP_ID"
+        )
+    if config.telegram_topic_id is not None and not telegram_target:
+        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID requires STOPLIGA_TELEGRAM_GROUP_ID or STOPLIGA_TELEGRAM_CHAT_ID")
+    if config.telegram_topic_id is not None and config.telegram_topic_id <= 0:
+        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID must be > 0")
     if validate_connection:
         _validate_unifi_host(config.host or "")
     if config.gotify_url:

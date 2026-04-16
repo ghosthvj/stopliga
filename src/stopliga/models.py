@@ -52,6 +52,8 @@ class Config:
     gotify_priority: int = 5
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_group_id: str | None = None
+    telegram_topic_id: int | None = None
     notification_timeout: float = 10.0
     notification_retries: int = 2
     notification_verify_tls: bool = True
@@ -68,8 +70,11 @@ class Config:
     def has_notifications(self) -> bool:
         return bool(
             (self.gotify_url and self.gotify_token)
-            or (self.telegram_bot_token and self.telegram_chat_id)
+            or (self.telegram_bot_token and self.resolved_telegram_chat_id())
         )
+
+    def resolved_telegram_chat_id(self) -> str | None:
+        return self.telegram_group_id or self.telegram_chat_id
 
     def resolved_health_max_age(self) -> int:
         if self.health_max_age_seconds is not None and self.health_max_age_seconds > 0:

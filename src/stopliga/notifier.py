@@ -165,17 +165,21 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
             failures["gotify"] = str(exc)
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="gotify", error=exc)
 
-    if config.telegram_bot_token and config.telegram_chat_id:
+    telegram_target = config.resolved_telegram_chat_id()
+    if config.telegram_bot_token and telegram_target:
         try:
             telegram_url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
             request_config = _telegram_request_config(config)
+            telegram_payload = {
+                "chat_id": telegram_target,
+                "text": message,
+                "disable_web_page_preview": True,
+            }
+            if config.telegram_topic_id is not None:
+                telegram_payload["message_thread_id"] = config.telegram_topic_id
             _post_json(
                 telegram_url,
-                {
-                    "chat_id": config.telegram_chat_id,
-                    "text": message,
-                    "disable_web_page_preview": True,
-                },
+                telegram_payload,
                 timeout=request_config.timeout,
                 retries=request_config.retries,
                 verify_tls=request_config.verify_tls,

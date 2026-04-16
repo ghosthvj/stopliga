@@ -144,6 +144,50 @@ site = "default"
                 },
             )
 
+    def test_telegram_group_and_chat_id_are_mutually_exclusive(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test",
+                    "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
+                    "STOPLIGA_TELEGRAM_GROUP_ID": "-1001234567890",
+                },
+            )
+
+    def test_telegram_topic_requires_chat_target(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_TELEGRAM_TOPIC_ID": "42",
+                },
+            )
+
+    def test_telegram_group_and_topic_load_successfully(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test",
+                "STOPLIGA_TELEGRAM_GROUP_ID": "-1001234567890",
+                "STOPLIGA_TELEGRAM_TOPIC_ID": "42",
+            },
+        )
+        self.assertEqual(config.telegram_group_id, "-1001234567890")
+        self.assertEqual(config.telegram_topic_id, 42)
+
     def test_empty_route_name_is_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

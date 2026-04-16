@@ -133,7 +133,17 @@ STOPLIGA_MAX_RESPONSE_BYTES=2097152
 # STOPLIGA_GOTIFY_VERIFY_TLS=true
 # STOPLIGA_TELEGRAM_BOT_TOKEN=123456:replace-me
 # STOPLIGA_TELEGRAM_CHAT_ID=123456789
+# STOPLIGA_TELEGRAM_GROUP_ID=-1001234567890
+# STOPLIGA_TELEGRAM_TOPIC_ID=42
 ```
+
+Telegram options:
+
+- `STOPLIGA_TELEGRAM_CHAT_ID`: send to a private chat or to any chat id you already use today
+- `STOPLIGA_TELEGRAM_GROUP_ID`: explicit target for a Telegram group or supergroup
+- `STOPLIGA_TELEGRAM_TOPIC_ID`: optional forum topic id inside that Telegram group
+- set either `STOPLIGA_TELEGRAM_CHAT_ID` or `STOPLIGA_TELEGRAM_GROUP_ID`, not both
+- if `STOPLIGA_TELEGRAM_TOPIC_ID` is set, StopLiga sends the message with Telegram `message_thread_id`
 
 ## Sync Cycle
 

@@ -1054,6 +1054,57 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertIn("Block status: ACTIVE -> INACTIVE", state.telegram_messages[0]["text"])
             self.assertIn("Blocking: INACTIVE", state.telegram_messages[0]["text"])
 
+    def test_telegram_notification_can_target_group_topic(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": True}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                telegram_bot_token=f"{feed.base_url}/telegram/bot-token".replace(f"{feed.base_url}/", ""),
+                telegram_group_id="-1009876543210",
+                telegram_topic_id=77,
+            )
+            import stopliga.notifier as notifier  # noqa: WPS433
+
+            original_post_json = notifier._post_json
+
+            def fake_post_json(
+                url: str,
+                payload: dict[str, Any],
+                *,
+                timeout: float,
+                retries: int,
+                verify_tls: bool,
+                ca_file: Any,
+            ) -> None:
+                state.telegram_messages.append({"url": url, **payload})
+
+            notifier._post_json = fake_post_json
+            try:
+                StopLigaService(config).run_once()
+            finally:
+                notifier._post_json = original_post_json
+
+            self.assertEqual(len(state.telegram_messages), 1)
+            self.assertEqual(state.telegram_messages[0]["chat_id"], "-1009876543210")
+            self.assertEqual(state.telegram_messages[0]["message_thread_id"], 77)
+            self.assertIn("Block status: ACTIVE -> INACTIVE", state.telegram_messages[0]["text"])
+
     def test_notification_error_redacts_telegram_token(self) -> None:
         safe = _safe_notification_url("https://api.telegram.org/bot123456:secret-token/sendMessage")
         self.assertEqual(safe, "https://api.telegram.org/bot***/sendMessage")
