@@ -5,7 +5,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    command: ["--loop"]
     volumes:
       - ./data:/data
     healthcheck:

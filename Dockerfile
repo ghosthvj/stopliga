@@ -61,4 +61,3 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 CMD ["stopliga", "--healthcheck"]
 
 ENTRYPOINT ["/opt/venv/bin/python", "-I", "/usr/local/bin/docker-entrypoint.py"]
-CMD ["--once"]

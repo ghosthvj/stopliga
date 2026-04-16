@@ -348,7 +348,16 @@ class StopLigaService:
             bootstrap_target_macs=bootstrap_target_macs,
         )
         self._log_plan_details(plan=plan, pending_manual_review=pending_manual_review)
-        log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=result.summary)
+        log_event(
+            self.logger,
+            logging.INFO,
+            "route_plan",
+            route=plan.route_label,
+            changed=plan.has_changes,
+            dry_run=self.config.dry_run,
+            desired_enabled=plan.desired_enabled,
+            fields_changed=",".join(plan.route_changed_fields + plan.linked_list_changed_fields),
+        )
         if not self.config.dry_run and plan.has_changes:
             apply_plan(client, backend, plan)
         return result
@@ -542,7 +551,11 @@ class StopLigaService:
                     mode=result.mode,
                     changed=result.changed,
                     created=result.created,
-                    route_id=result.route_id,
+                    route=result.route_name,
+                    enabled=result.desired_enabled,
+                    destinations=result.desired_destinations,
+                    added_destinations=result.added_destinations,
+                    removed_destinations=result.removed_destinations,
                 )
                 return result
             except StopLigaError as exc:
