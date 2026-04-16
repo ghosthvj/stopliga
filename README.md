@@ -16,6 +16,10 @@ docker compose pull
 docker compose up -d
 ```
 
+For the API key, open UniFi Network and go to `Settings > Control Plane > Integrations`, then create or copy a local Network API key and paste it into `UNIFI_API_KEY` in `.env`.
+
+Official reference: [Getting Started with the Official UniFi API](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API)
+
 ## Minimum `.env`
 
 These are the only values you normally need to change:
@@ -30,6 +34,7 @@ UNIFI_VERIFY_TLS=false
 Notes:
 
 - `UNIFI_API_KEY` is required. Authentication is API-key only.
+- You can generate that key in UniFi Network under `Settings > Control Plane > Integrations`.
 - Leave `UNIFI_SITE=default` unless your UniFi setup uses a different site.
 - Use `UNIFI_VERIFY_TLS=false` only if your UniFi device uses a self-signed certificate on your local network.
 
