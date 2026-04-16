@@ -2,56 +2,46 @@
 
 StopLiga keeps a UniFi policy-based route named `StopLiga` in sync with the status and IP list published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list).
 
+> Edit `UNIFI_HOST` and `UNIFI_API_KEY`, start the container, and StopLiga takes care of the route automatically.
+
 This repo is meant to run with Docker.
 
-## What It Does
+## At a Glance
 
-StopLiga manages a UniFi policy route that matches the destination IPs/CIDRs published in the LaLiga feed.
+- Creates the UniFi policy route automatically if it does not exist
+- Reuses and updates the route if it already exists
+- Picks the first available UniFi network whose purpose is `vpn-client`
+- Applies the route to `ALL_CLIENTS` when UniFi allows it
+- Enables or disables the route based on the published blocking status
+- Syncs every 5 minutes by default
 
-On every sync it:
+StopLiga uses the public destinations published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list). It does not discover those IPs by itself.
 
-1. checks whether the feed says blocking is active or not
-2. downloads the latest destination IP list
-3. compares that with the UniFi route
-4. enables or disables the route
-5. updates the route destination list if needed
-
-Those IPs are the public destinations published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list). StopLiga does not discover them by itself.
-
-If the UniFi route does not exist yet, StopLiga creates it automatically before continuing the sync.
-
-In the normal zero-config path, StopLiga also:
-
-- finds the first available UniFi network whose purpose is `vpn-client`
-- creates the route named by `STOPLIGA_ROUTE_NAME`
-- applies it to `ALL_CLIENTS` when UniFi allows it
-- enables or disables the route according to the published blocking status
-
-## Before You Start
+## Requirements
 
 You need:
 
 - a UniFi gateway/controller reachable from the container
-- a local UniFi API key
+- a local UniFi Network API key
 - at least one UniFi VPN Client network already configured in UniFi
 
-Important:
-
-- StopLiga does not create or configure the VPN tunnel itself
-- it creates and manages the UniFi policy route automatically once a `vpn-client` network exists
-- for most setups, the only values you need to change are `UNIFI_HOST` and `UNIFI_API_KEY`
+> StopLiga does not create the VPN tunnel itself. It creates and manages the UniFi policy route that uses that tunnel.
 
 ## Quick Start
 
 1. Copy the example environment file.
-2. Set only your UniFi host and API key.
-3. Start the container with Docker Compose.
+2. Edit only `UNIFI_HOST` and `UNIFI_API_KEY`.
+3. Start the container.
+4. Follow the logs.
 
 ```bash
 cp .env.example .env
 docker compose pull
 docker compose up -d
+docker compose logs -f
 ```
+
+### Minimal `.env`
 
 Your `.env` can stay as simple as this:
 
@@ -66,50 +56,74 @@ STOPLIGA_ROUTE_NAME=StopLiga
 STOPLIGA_MAX_RESPONSE_BYTES=2097152
 ```
 
-After startup, follow the logs with:
-
-```bash
-docker compose logs -f
-```
+| Variable | What it is for |
+| --- | --- |
+| `UNIFI_HOST` | IP or hostname of your UniFi router or controller |
+| `UNIFI_API_KEY` | Local UniFi Network API key that StopLiga uses to connect |
+| `UNIFI_SITE` | UniFi site to use. `default` is the normal value for most setups |
+| `UNIFI_VERIFY_TLS` | Whether StopLiga should verify the UniFi HTTPS certificate. `false` is common on home setups with self-signed certs |
+| `STOPLIGA_RUN_MODE` | `loop` keeps the container running and syncing continuously |
+| `STOPLIGA_SYNC_INTERVAL_SECONDS` | How often StopLiga checks the feed and updates UniFi. `300` means every 5 minutes |
+| `STOPLIGA_ROUTE_NAME` | UniFi route name that StopLiga will create or manage automatically |
+| `STOPLIGA_MAX_RESPONSE_BYTES` | Safety limit for downloaded responses. Leave the default unless you have a specific reason to change it |
 
 For the API key, open UniFi Network and go to `Settings > Control Plane > Integrations`, then create or copy a local Network API key and paste it into `UNIFI_API_KEY` in `.env`.
 
 Official reference: [Getting Started with the Official UniFi API](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API)
 
+## What Happens Automatically
+
+Once the container starts:
+
+1. StopLiga downloads the current blocking status.
+2. StopLiga downloads the current IP/CIDR list.
+3. StopLiga looks for the UniFi route named by `STOPLIGA_ROUTE_NAME`.
+4. If the route does not exist, StopLiga creates it automatically.
+5. StopLiga compares the published destinations against the UniFi route.
+6. StopLiga enables or disables the route to match the published blocking status.
+7. StopLiga updates the destination list if it changed.
+
+Normal automatic behavior:
+
+- if the route already exists, StopLiga updates it
+- if the route does not exist, StopLiga creates it
+- it uses the first available UniFi `vpn-client` network
+- it applies the route to `ALL_CLIENTS` when UniFi accepts that target
+
+Fallback behavior:
+
+- if UniFi rejects `ALL_CLIENTS`, StopLiga retries with one detected client device
+- that degraded route stays disabled until you review it
+
+## VPN Client Network Required
+
+StopLiga can create the policy route automatically, but UniFi must already have at least one VPN Client network.
+
+- StopLiga looks for UniFi networks whose purpose is `vpn-client`.
+- If one exists, StopLiga picks the first available one automatically.
+- If no `vpn-client` network exists, StopLiga stops and logs a clear error with a link to this section.
+- After you create a VPN Client network in UniFi, restart the container.
+
 ## Configuration
 
-These are the same variables that appear in [`.env.example`](/Users/jonatan/Nextcloud/AI/Claude/Apps/StopLiga/.env.example:1).
+These are the same values that appear in [`.env.example`](.env.example).
 
-For most users, leave everything except `UNIFI_HOST` and `UNIFI_API_KEY` unchanged:
+For most users, leave everything except `UNIFI_HOST` and `UNIFI_API_KEY` unchanged.
+
+### Core Settings
 
 ```dotenv
 UNIFI_HOST=10.0.1.1
 UNIFI_API_KEY=replace-me
 UNIFI_SITE=default
 UNIFI_VERIFY_TLS=false
-```
-
-Core runtime settings:
-
-```dotenv
 STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
 STOPLIGA_MAX_RESPONSE_BYTES=2097152
 ```
 
-What those values do:
-
-- `UNIFI_HOST`: UniFi host or IP address that the container should connect to.
-- `UNIFI_API_KEY`: local UniFi API key used for authentication.
-- `UNIFI_SITE`: UniFi site name. `default` is the normal value.
-- `UNIFI_VERIFY_TLS`: whether to verify the UniFi TLS certificate. Set it to `false` only for local self-signed setups.
-- `STOPLIGA_RUN_MODE`: `loop` keeps the service running continuously. `once` runs a single sync and exits.
-- `STOPLIGA_SYNC_INTERVAL_SECONDS`: how often StopLiga runs a full sync. Each sync checks both blocking status and the IP list.
-- `STOPLIGA_ROUTE_NAME`: exact UniFi policy route name that StopLiga should manage or create automatically.
-- `STOPLIGA_MAX_RESPONSE_BYTES`: safety limit for HTTP response size, in bytes. It applies to feed downloads and UniFi API responses and helps avoid bad or unexpectedly large responses. In normal setups, leave the default.
-
-Optional notifications:
+### Optional Notifications
 
 ```dotenv
 # STOPLIGA_GOTIFY_URL=https://gotify.example.com
@@ -121,31 +135,9 @@ Optional notifications:
 # STOPLIGA_TELEGRAM_CHAT_ID=123456789
 ```
 
-## VPN Client Network Required
-
-StopLiga can create the policy route automatically, but UniFi must already have at least one VPN Client network.
-
-- StopLiga looks for UniFi networks whose purpose is `vpn-client`.
-- If the route does not exist yet, it automatically picks the first available `vpn-client` network and creates the route.
-- If no `vpn-client` network exists, StopLiga cannot continue and logs a clear error with a link to this section.
-- After you create a VPN Client network in UniFi, restart the container.
-
-## Automatic Setup
-
-- if the route already exists, StopLiga updates its destination IP list and enabled state
-- if the route does not exist, StopLiga creates it automatically
-- in the normal case it applies the route to `ALL_CLIENTS`
-- if UniFi rejects `ALL_CLIENTS`, StopLiga retries with a single detected client and keeps that degraded route disabled until you review it
-
-What the policy route does:
-
-- it matches destination IPs/CIDRs from the published feed
-- it applies only to the clients/targets configured in that UniFi route
-- it sends that matching traffic through the VPN network attached to the route
-
 ## Sync Cycle
 
-In loop mode, every cycle does the same sequence:
+With `STOPLIGA_SYNC_INTERVAL_SECONDS=300`, StopLiga runs a full sync every 5 minutes:
 
 1. download the current blocking status
 2. download the current IP/CIDR list
@@ -153,11 +145,9 @@ In loop mode, every cycle does the same sequence:
 4. enable or disable the route
 5. update the destination IP list if it changed
 
-With `STOPLIGA_SYNC_INTERVAL_SECONDS=300`, that full cycle runs every 5 minutes.
-
 ## Docker Compose
 
-The repo includes a working [`docker-compose.yml`](/Users/jonatan/Nextcloud/AI/Claude/Apps/StopLiga/docker-compose.yml:1):
+The repo includes a working [`docker-compose.yml`](docker-compose.yml):
 
 ```yaml
 services:
@@ -172,8 +162,6 @@ services:
     healthcheck:
       disable: true
 ```
-
-The container mode comes from `STOPLIGA_RUN_MODE` in `.env`.
 
 Useful commands:
 
