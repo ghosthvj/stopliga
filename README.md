@@ -31,7 +31,6 @@ Important:
 - StopLiga does not create or configure the VPN tunnel itself
 - it manages the UniFi policy route that uses that VPN
 - if the route already exists, StopLiga only updates its destination IP list and enabled state
-- if the route does not exist yet, StopLiga can bootstrap it, but it still needs an existing VPN client network inside UniFi
 
 ## Quick Start
 
@@ -71,24 +70,16 @@ STOPLIGA_ROUTE_NAME=StopLiga
 STOPLIGA_MAX_RESPONSE_BYTES=2097152
 ```
 
-What they mean:
+What each variable does:
 
-- `UNIFI_API_KEY` is required. Authentication is API-key only.
-- `UNIFI_SITE=default` is the normal value unless your UniFi setup uses a different site.
-- `UNIFI_VERIFY_TLS=false` is only for local setups with a self-signed UniFi certificate.
-- `STOPLIGA_RUN_MODE=loop` keeps the container running continuously.
-- `STOPLIGA_SYNC_INTERVAL_SECONDS` controls how often StopLiga runs a full sync.
-- `STOPLIGA_ROUTE_NAME` must match the exact UniFi policy route name that StopLiga should manage.
-- `STOPLIGA_MAX_RESPONSE_BYTES` is a safety limit for feed/API response size.
-
-Optional route bootstrap:
-
-```dotenv
-# STOPLIGA_VPN_NAME=Mullvad DE
-# STOPLIGA_TARGETS=apple-tv,ps5,aa:bb:cc:dd:ee:ff
-```
-
-Use those only if the route does not already exist and you want StopLiga to create it for you with an existing UniFi VPN client network and a set of target devices.
+- `UNIFI_HOST`: UniFi host or IP address that the container should connect to.
+- `UNIFI_API_KEY`: local UniFi API key used for authentication.
+- `UNIFI_SITE`: UniFi site name. `default` is the normal value.
+- `UNIFI_VERIFY_TLS`: whether to verify the UniFi TLS certificate. Set it to `false` only for local self-signed setups.
+- `STOPLIGA_RUN_MODE`: `loop` keeps the service running continuously. `once` runs a single sync and exits.
+- `STOPLIGA_SYNC_INTERVAL_SECONDS`: how often StopLiga runs a full sync. Each sync checks both blocking status and the IP list.
+- `STOPLIGA_ROUTE_NAME`: exact UniFi policy route name that StopLiga should manage.
+- `STOPLIGA_MAX_RESPONSE_BYTES`: safety limit for HTTP response size, in bytes. It applies to feed downloads and UniFi API responses and helps avoid bad or unexpectedly large responses. In normal setups, leave the default.
 
 Optional notifications:
 
@@ -107,7 +98,7 @@ Optional notifications:
 The usual setup is:
 
 1. Create or verify your VPN client network in UniFi.
-2. Create the policy route in UniFi, or let StopLiga create it for you.
+2. Create the policy route in UniFi.
 3. Point StopLiga at that route name with `STOPLIGA_ROUTE_NAME`.
 
 What the policy route does:
