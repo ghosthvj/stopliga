@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import logging
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from stopliga.logging_utils import KeyValueFormatter  # noqa: E402
+from stopliga.logging_utils import KeyValueFormatter, configure_logging  # noqa: E402
 
 
 class LoggingFormatterTests(unittest.TestCase):
@@ -91,3 +93,38 @@ class LoggingFormatterTests(unittest.TestCase):
             'docs_url="https://github.com/jcastro/stopliga/blob/main/README.md#vpn-client-network-required"',
             output,
         )
+
+
+class LoggingConfigurationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        root = logging.getLogger()
+        self._original_handlers = list(root.handlers)
+        self._original_level = root.level
+
+    def tearDown(self) -> None:
+        root = logging.getLogger()
+        root.handlers.clear()
+        root.handlers.extend(self._original_handlers)
+        root.setLevel(self._original_level)
+
+    def test_logs_are_split_between_stdout_and_stderr_by_severity(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            configure_logging("DEBUG")
+            logger = logging.getLogger("stopliga.test")
+            logger.info("info_message")
+            logger.warning("warning_message")
+            logger.error("error_message")
+
+        stdout_output = stdout.getvalue()
+        stderr_output = stderr.getvalue()
+
+        self.assertIn("INFO info_message", stdout_output)
+        self.assertIn("WARNING warning_message", stdout_output)
+        self.assertNotIn("ERROR error_message", stdout_output)
+
+        self.assertIn("ERROR error_message", stderr_output)
+        self.assertNotIn("INFO info_message", stderr_output)
+        self.assertNotIn("WARNING warning_message", stderr_output)

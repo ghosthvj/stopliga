@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import logging
+import sys
 from typing import Any
 
 
@@ -159,7 +160,7 @@ def _visible_fields(event: str | None, fields: dict[str, Any], levelno: int) -> 
 
 
 class KeyValueFormatter(logging.Formatter):
-    """Simple key=value formatter that stays readable in Docker stdout."""
+    """Simple key=value formatter that stays readable in container logs."""
 
     def format(self, record: logging.LogRecord) -> str:
         fields = getattr(record, "fields", {})
@@ -193,12 +194,20 @@ class KeyValueFormatter(logging.Formatter):
 def configure_logging(level_name: str) -> None:
     """Configure application-wide logging."""
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(KeyValueFormatter())
+    formatter = KeyValueFormatter()
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+    stderr_handler.addFilter(lambda record: record.levelno >= logging.ERROR)
+
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(getattr(logging, level_name.upper(), logging.INFO))
-    root.addHandler(handler)
+    root.addHandler(stdout_handler)
+    root.addHandler(stderr_handler)
 
 
 def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> None:
