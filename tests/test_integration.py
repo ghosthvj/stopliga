@@ -489,7 +489,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertTrue(result.created)
             self.assertIsNotNone(state.route)
             self.assertEqual(state.route["description"], "LaLiga")
-            self.assertFalse(state.route["enabled"])
+            self.assertTrue(state.route["enabled"])
             self.assertEqual(state.route["network_id"], "vpn-network-1")
             self.assertEqual(state.route["target_devices"], [{"type": "ALL_CLIENTS"}])
             self.assertEqual(
@@ -497,6 +497,28 @@ class ServiceIntegrationTests(unittest.TestCase):
                 ["192.0.2.10", "198.51.100.0/24"],
             )
             self.assertEqual(result.bootstrap_source, "auto-bootstrap")
+
+    def test_missing_vpn_client_network_points_to_docs(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10"],
+            route=None,
+            networks=[],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+            )
+            with self.assertLogs("stopliga.service", level="ERROR") as captured:
+                with self.assertRaisesRegex(
+                    DiscoveryError,
+                    r"https://github\.com/jcastro/stopliga/blob/main/README\.md#vpn-client-network-required",
+                ):
+                    StopLigaService(config).run_once()
+            self.assertTrue(any("vpn_client_network_missing" in line for line in captured.output))
 
     def test_backend_failures_do_not_trigger_bootstrap(self) -> None:
         state = FakeState(
@@ -672,7 +694,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             )
             result = StopLigaService(config).run_once()
             self.assertTrue(result.changed)
-            self.assertFalse(state.route["enabled"])
+            self.assertTrue(state.route["enabled"])
 
     def test_bootstrap_does_not_relist_routes_after_create(self) -> None:
         state = FakeState(
@@ -933,7 +955,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                     {
                         "status": "success",
                         "last_success_at": "2099-01-01T00:00:00+00:00",
-                        "bootstrap_source": "auto-bootstrap",
+                        "bootstrap_source": "auto-bootstrap-device-fallback",
                         "bootstrap_network_id": "vpn-network-1",
                         "bootstrap_target_macs": ["aa:bb:cc:dd:ee:01"],
                     }

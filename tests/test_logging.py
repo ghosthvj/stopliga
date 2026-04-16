@@ -67,3 +67,27 @@ class LoggingFormatterTests(unittest.TestCase):
         self.assertIn('logger="stopliga.feed"', output)
         self.assertIn('event="feed_loaded"', output)
         self.assertIn('sync_id="abc123"', output)
+
+    def test_missing_vpn_client_network_log_includes_docs_url(self) -> None:
+        formatter = KeyValueFormatter()
+        record = logging.LogRecord(
+            name="stopliga.service",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="vpn_client_network_missing",
+            args=(),
+            exc_info=None,
+        )
+        record.event = "vpn_client_network_missing"
+        record.fields = {
+            "docs_url": "https://github.com/jcastro/stopliga/blob/main/README.md#vpn-client-network-required",
+        }
+
+        output = formatter.format(record)
+
+        self.assertIn("ERROR No UniFi VPN client network found", output)
+        self.assertIn(
+            'docs_url="https://github.com/jcastro/stopliga/blob/main/README.md#vpn-client-network-required"',
+            output,
+        )

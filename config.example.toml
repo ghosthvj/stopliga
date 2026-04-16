@@ -1,11 +1,12 @@
 [app]
+# For most setups, only set host and api_key below.
 # Run mode for the service. Use "loop" for normal operation.
 run_mode = "loop"
 
 # How often StopLiga runs a full sync, in seconds.
 interval_seconds = 300
 
-# Exact UniFi policy route name that StopLiga should manage.
+# Exact UniFi policy route name that StopLiga should manage or create automatically.
 route_name = "StopLiga"
 destination_field = "auto"
 request_timeout = 15
@@ -40,7 +41,7 @@ api_key = "replace-me"
 site = "default"
 
 # Set to false only if your UniFi uses a self-signed certificate.
-verify_tls = true
+verify_tls = false
 
 [notifications]
 # gotify_url = "https://gotify.example.com"

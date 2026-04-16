@@ -6,7 +6,7 @@ import logging
 from uuid import uuid4
 from threading import Event
 
-from .errors import AuthenticationError, ConfigError, PartialUpdateError, ReconciliationRequiredError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
+from .errors import AuthenticationError, ConfigError, DiscoveryError, PartialUpdateError, ReconciliationRequiredError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
@@ -26,6 +26,7 @@ from .unifi import (
 
 
 FATAL_LOOP_ERRORS = (AuthenticationError, ConfigError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError)
+VPN_CLIENT_NETWORK_REQUIRED_URL = "https://github.com/jcastro/stopliga/blob/main/README.md#vpn-client-network-required"
 
 
 class StopLigaService:
@@ -207,7 +208,7 @@ class StopLigaService:
         return tuple(items)
 
     def _bootstrap_requires_manual_review(self, source: str | None) -> bool:
-        return bool(source and source.startswith("auto-bootstrap"))
+        return source == "auto-bootstrap-device-fallback"
 
     def _route_target_macs(self, route_record: dict[str, object]) -> tuple[str, ...]:
         target_devices = route_record.get("target_devices")
@@ -380,7 +381,20 @@ class StopLigaService:
             )
             source = f"vpn:{self.config.vpn_name}"
         else:
-            vpn_network = client.pick_default_vpn_network()
+            try:
+                vpn_network = client.pick_default_vpn_network()
+            except DiscoveryError as exc:
+                message = (
+                    "No UniFi VPN client network was found. Create at least one UniFi VPN Client network "
+                    f"and start StopLiga again. See {VPN_CLIENT_NETWORK_REQUIRED_URL}"
+                )
+                log_event(
+                    self.logger,
+                    logging.ERROR,
+                    "vpn_client_network_missing",
+                    docs_url=VPN_CLIENT_NETWORK_REQUIRED_URL,
+                )
+                raise DiscoveryError(message) from exc
             payload = build_direct_bootstrap_payload(
                 route_name_value=self.config.route_name,
                 desired_ips=desired_ips,

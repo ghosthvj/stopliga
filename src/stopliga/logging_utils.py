@@ -58,7 +58,9 @@ def _event_message(event: str | None, fields: dict[str, Any]) -> str | None:
     if event == "route_bootstrap_prepared":
         return "Route not found, preparing bootstrap"
     if event == "route_bootstrap_retry":
-        return "Retrying bootstrap with a single target device"
+        return "UniFi rejected ALL_CLIENTS, retrying bootstrap with a single detected client"
+    if event == "vpn_client_network_missing":
+        return "No UniFi VPN client network found"
     if event == "route_check":
         if fields.get("pending_manual_review"):
             return "Route needs manual review before activation"
@@ -133,7 +135,7 @@ def _visible_fields(event: str | None, fields: dict[str, Any], levelno: int) -> 
     # Sync IDs are useful for deep debugging but noisy in normal container logs.
     visible.pop("sync_id", None)
 
-    suppressed_by_event = {
+    suppressed_by_event: dict[str, set[str]] = {
         "feed_check": {"status_url", "ip_list_url", "strict_consistency"},
         "feed_revision_resolved": {"revision"},
         "feed_loaded": {"revision", "desired_enabled", "raw_lines", "feed_hash"},
@@ -147,8 +149,11 @@ def _visible_fields(event: str | None, fields: dict[str, Any], levelno: int) -> 
         "linked_list_updating": {"linked_list_id"},
         "sync_finish": {"route_id"},
     }
-    for key in suppressed_by_event.get(event, set()):
-        visible.pop(key, None)
+    if event is not None:
+        suppressed_fields = suppressed_by_event.get(event)
+        if suppressed_fields:
+            for key in suppressed_fields:
+                visible.pop(key, None)
 
     return visible
 

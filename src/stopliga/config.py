@@ -225,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=None, help="UniFi HTTPS port for local mode")
     parser.add_argument("--api-key", default=None, help="UniFi local API key")
     parser.add_argument("--site", default=None, help="UniFi site name or identifier")
-    parser.add_argument("--route-name", default=None, help="Exact route name to manage")
+    parser.add_argument("--route-name", default=None, help="Exact route name to manage or create")
     parser.add_argument("--destination-field", default=None, help="Destination field path or 'auto'")
     parser.add_argument("--status-url", default=None, help="Status JSON URL")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
