@@ -204,18 +204,8 @@ class OPNsenseClient:
     def toggle_rule(self, uuid: str, enabled: bool) -> None:
         self.request("POST", f"/firewall/filter/toggleRule/{uuid}/{1 if enabled else 0}")
 
-    def create_savepoint(self) -> str:
-        result = self.request("POST", "/firewall/filter_base/savepoint")
-        revision = result.get("revision") if isinstance(result, dict) else None
-        if not revision:
-            raise RemoteRequestError("OPNsense did not return a savepoint revision")
-        return str(revision)
-
-    def apply_filter(self, revision: str) -> None:
-        self.request("POST", f"/firewall/filter/apply/{revision}")
-
-    def cancel_rollback(self, revision: str) -> None:
-        self.request("POST", f"/firewall/filter_base/cancelRollback/{revision}")
+    def apply_filter(self) -> None:
+        self.request("POST", "/firewall/filter/apply")
 
 
 def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
@@ -287,10 +277,8 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
     )
 
     if rule_changed and not config.dry_run:
-        revision = client.create_savepoint()
         client.toggle_rule(rule_uuid, desired_enabled)
-        client.apply_filter(revision)
-        client.cancel_rollback(revision)
+        client.apply_filter()
 
     added = len([ip for ip in desired_ips if ip not in current_ips])
     removed = len([ip for ip in current_ips if ip not in desired_ips])
