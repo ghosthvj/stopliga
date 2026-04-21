@@ -5,7 +5,7 @@ StopLiga keeps a firewall route or alias in sync with the status and IP list pub
 Supported firewall backends:
 
 - **UniFi** — manages a policy-based traffic route (default)
-- **OPNsense** — manages a firewall alias
+- **OPNsense** — manages a firewall alias and toggles a firewall rule
 
 > Set your firewall credentials, start the container, and StopLiga takes care of the rest automatically.
 
@@ -129,31 +129,40 @@ The alias always contains the current IP list regardless of the rule state.
 ### Requirements
 
 - OPNsense reachable from the container over HTTPS
-- An OPNsense API key and secret (user with `Firewall` privilege)
-- A firewall rule in OPNsense that references the alias by name
+- An OPNsense API key and secret with **Firewall: Aliases** and **Firewall: Rules** privileges
+- A firewall rule in OPNsense created manually once (StopLiga will enable/disable it)
 
 ### OPNsense API Key Setup
 
 1. Log in to OPNsense as administrator.
-2. Go to **System → User Management → Users**.
+2. Go to **System → Access → Users**.
 3. Select a user or create a new one dedicated to StopLiga.
-4. Ensure the user has **Firewall** privilege under *Effective Privileges*.
-5. Scroll to the **API** section → click **+** to generate a new key.
-6. Copy the **Key** and **Secret** shown — these are shown only once.
+4. Under *Effective Privileges*, add:
+   - `Firewall: Aliases`
+   - `Firewall: Alias: Edit`
+   - `Firewall: Rules`
+   - `Firewall: Rules: [new]`
+   - `Firewall: Rules: Edit`
+   - `System: Advanced: Firewall and NAT`
+5. Scroll to the **Commands** section → click **Create and Download API key** to generate a new key.
+6. Copy the **Key** and **Secret** — from the downloaded file.
 
 ### Firewall Rule Setup
 
-You create the rule once. StopLiga will find it by its description and enable or disable it on each sync.
+Create the rule once in **Firewall → Rules**. StopLiga finds it by its `Description` field and enables or disables it on each sync.
 
-1. Go to **Firewall → Automation → Filter** (API rules are listed here).
-2. Add a rule:
-   - **Description**: must match `STOPLIGA_ROUTE_NAME` exactly (default: `StopLiga`)
-   - **Action**: Pass
-   - **Interface**: the interface your clients use (e.g. LAN)
-   - **Destination**: the alias named by `OPNSENSE_ALIAS_NAME`
-   - **Gateway**: your VPN gateway
-3. Place the rule above any default gateway rules.
-4. Save — StopLiga applies enable/disable itself via the API.
+Required fields:
+
+| Field | Value |
+| --- | --- |
+| **Description** | must match `STOPLIGA_ROUTE_NAME` exactly (e.g. `VPN_LIGA`) |
+| **Action** | Pass |
+| **Interface** | interface your clients use (e.g. LAN) |
+| **Direction** | In |
+| **Source** | the alias named by `OPNSENSE_ALIAS_NAME` |
+| **Gateway** | your VPN gateway |
+
+Place the rule above any default gateway rules. Save — StopLiga manages the enabled state via API from this point on.
 
 StopLiga creates the alias automatically on first run if it does not exist yet.
 
@@ -206,7 +215,6 @@ Once the container starts:
 5. If the alias exists, StopLiga updates its IPs if they changed.
 6. StopLiga searches for the firewall rule whose description matches `STOPLIGA_ROUTE_NAME`.
 7. StopLiga enables or disables that rule to match the published blocking status.
-8. Rule changes use OPNsense savepoint/rollback for safe remote application.
 
 ---
 
