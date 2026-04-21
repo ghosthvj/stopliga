@@ -1,4 +1,4 @@
-"""OPNsense API client and alias synchronization logic."""
+"""OPNsense API client and alias/rule synchronization logic."""
 
 from __future__ import annotations
 
@@ -141,8 +141,10 @@ class OPNsenseClient:
             raise AuthenticationError("OPNSENSE_API_KEY and OPNSENSE_API_SECRET are required")
         self.request("GET", "/firewall/alias/get")
 
+    # --- Alias methods ---
+
     def search_alias(self, name: str) -> dict[str, Any] | None:
-        """Return the first alias whose name exactly matches, or None."""
+        """Return the alias row whose name exactly matches, or None."""
         payload = self.request("GET", f"/firewall/alias/searchItem?searchPhrase={urllib.parse.quote(name)}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
         for row in rows:
@@ -151,20 +153,20 @@ class OPNsenseClient:
         return None
 
     def get_alias_item(self, uuid: str) -> dict[str, Any]:
-        """Return the alias record from getItem (unwraps the 'alias' envelope if present)."""
+        """Return the alias record, unwrapping the 'alias' envelope if present."""
         payload = self.request("GET", f"/firewall/alias/getItem/{uuid}")
         if isinstance(payload, dict) and "alias" in payload:
             return payload["alias"]
         return payload if isinstance(payload, dict) else {}
 
-    def create_alias(self, name: str, content: list[str], *, enabled: bool) -> str:
+    def create_alias(self, name: str, content: list[str]) -> str:
         data = {
             "alias": {
                 "name": name,
                 "type": "host",
                 "description": f"StopLiga managed — {name}",
                 "content": "\n".join(content),
-                "enabled": "1" if enabled else "0",
+                "enabled": "1",
             }
         }
         result = self.request("POST", "/firewall/alias/addItem", json_body=data)
@@ -173,101 +175,134 @@ class OPNsenseClient:
             raise DiscoveryError(f"OPNsense did not return UUID after creating alias {name!r}")
         return str(uuid)
 
-    def update_alias(self, uuid: str, name: str, content: list[str], *, enabled: bool) -> None:
+    def update_alias_content(self, uuid: str, name: str, content: list[str]) -> None:
         data = {
             "alias": {
                 "name": name,
                 "type": "host",
                 "description": f"StopLiga managed — {name}",
                 "content": "\n".join(content),
-                "enabled": "1" if enabled else "0",
+                "enabled": "1",
             }
         }
         self.request("POST", f"/firewall/alias/setItem/{uuid}", json_body=data)
 
-    def reconfigure(self) -> None:
+    def reconfigure_alias(self) -> None:
         self.request("POST", "/firewall/alias/reconfigure")
+
+    # --- Firewall rule methods ---
+
+    def search_rule(self, description: str) -> dict[str, Any] | None:
+        """Return the first rule whose description exactly matches, or None."""
+        payload = self.request("GET", f"/firewall/filter/searchRule?searchPhrase={urllib.parse.quote(description)}")
+        rows = payload.get("rows", []) if isinstance(payload, dict) else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("description", "").strip().lower() == description.strip().lower():
+                return row
+        return None
+
+    def toggle_rule(self, uuid: str, enabled: bool) -> None:
+        self.request("POST", f"/firewall/filter/toggleRule/{uuid}/{1 if enabled else 0}")
+
+    def create_savepoint(self) -> str:
+        result = self.request("POST", "/firewall/filter_base/savepoint")
+        revision = result.get("revision") if isinstance(result, dict) else None
+        if not revision:
+            raise RemoteRequestError("OPNsense did not return a savepoint revision")
+        return str(revision)
+
+    def apply_filter(self, revision: str) -> None:
+        self.request("POST", f"/firewall/filter/apply/{revision}")
+
+    def cancel_rollback(self, revision: str) -> None:
+        self.request("POST", f"/firewall/filter_base/cancelRollback/{revision}")
 
 
 def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
-    """Create or update an OPNsense alias to match the feed snapshot."""
+    """Synchronize OPNsense alias IPs and firewall rule state with the feed snapshot."""
     client = OPNsenseClient(config)
     client.authenticate()
 
-    alias_name = sanitize_alias_name(config.route_name)
+    alias_name = config.opnsense_alias_name or sanitize_alias_name(config.route_name)
+    rule_description = config.route_name
     desired_ips = list(feed_snapshot.destinations)
     desired_enabled = feed_snapshot.desired_enabled
     logger = logging.getLogger("stopliga.opnsense")
 
-    existing = client.search_alias(alias_name)
-    created = False
-    current_ips: list[str] = []
-    current_enabled: bool | None = None
+    # --- Alias: keep IPs current, always enabled ---
+    existing_alias = client.search_alias(alias_name)
     alias_uuid = ""
+    alias_created = False
+    current_ips: list[str] = []
 
-    if existing is None:
+    if existing_alias is None:
         log_event(logger, logging.INFO, "opnsense_alias_create", alias=alias_name, dry_run=config.dry_run)
-        if config.dry_run:
-            return SyncResult(
-                mode="opnsense",
-                route_name=config.route_name,
-                route_id=None,
-                backend_name="opnsense-alias",
-                changed=True,
-                created=True,
-                dry_run=True,
-                desired_enabled=desired_enabled,
-                current_enabled=None,
-                desired_destinations=len(desired_ips),
-                current_destinations=0,
-                invalid_entries=feed_snapshot.invalid_count,
-                feed_hash=feed_snapshot.feed_hash,
-                destinations_hash=feed_snapshot.destinations_hash,
-                summary=f"dry-run alias create alias={alias_name}",
-                is_blocked=feed_snapshot.is_blocked,
-                bootstrap_source="alias-created",
-            )
-        alias_uuid = client.create_alias(alias_name, desired_ips, enabled=desired_enabled)
-        client.reconfigure()
-        created = True
+        if not config.dry_run:
+            alias_uuid = client.create_alias(alias_name, desired_ips)
+            client.reconfigure_alias()
+        alias_created = True
     else:
-        alias_uuid = str(existing.get("uuid", ""))
+        alias_uuid = str(existing_alias.get("uuid", ""))
         alias_record = client.get_alias_item(alias_uuid)
         current_ips = parse_alias_content(alias_record)
-        current_enabled = alias_record.get("enabled") == "1"
-
         ips_changed = current_ips != desired_ips
-        enabled_changed = current_enabled != desired_enabled
-
         log_event(
             logger,
             logging.INFO,
             "opnsense_alias_check",
             alias=alias_name,
             alias_uuid=alias_uuid,
-            current_enabled=current_enabled,
-            desired_enabled=desired_enabled,
             current_destinations=len(current_ips),
             desired_destinations=len(desired_ips),
             ips_changed=ips_changed,
-            enabled_changed=enabled_changed,
+        )
+        if ips_changed and not config.dry_run:
+            client.update_alias_content(alias_uuid, alias_name, desired_ips)
+            client.reconfigure_alias()
+
+    # --- Rule: enable or disable based on blocking status ---
+    rule_record = client.search_rule(rule_description)
+    rule_uuid = ""
+    current_enabled: bool | None = None
+
+    if rule_record is None:
+        raise DiscoveryError(
+            f"Firewall rule {rule_description!r} not found in OPNsense. "
+            "Create a rule with that exact description and restart StopLiga."
         )
 
-        if (ips_changed or enabled_changed) and not config.dry_run:
-            client.update_alias(alias_uuid, alias_name, desired_ips, enabled=desired_enabled)
-            client.reconfigure()
+    rule_uuid = str(rule_record.get("uuid", ""))
+    current_enabled = rule_record.get("enabled") == "1"
+    rule_changed = current_enabled != desired_enabled
+
+    log_event(
+        logger,
+        logging.INFO,
+        "opnsense_rule_check",
+        rule=rule_description,
+        rule_uuid=rule_uuid,
+        current_enabled=current_enabled,
+        desired_enabled=desired_enabled,
+        rule_changed=rule_changed,
+    )
+
+    if rule_changed and not config.dry_run:
+        revision = client.create_savepoint()
+        client.toggle_rule(rule_uuid, desired_enabled)
+        client.apply_filter(revision)
+        client.cancel_rollback(revision)
 
     added = len([ip for ip in desired_ips if ip not in current_ips])
     removed = len([ip for ip in current_ips if ip not in desired_ips])
-    changed = created or current_ips != desired_ips or current_enabled != desired_enabled
+    changed = alias_created or current_ips != desired_ips or rule_changed
 
     return SyncResult(
         mode="opnsense",
         route_name=config.route_name,
-        route_id=alias_uuid or None,
-        backend_name="opnsense-alias",
+        route_id=rule_uuid or None,
+        backend_name="opnsense-alias+rule",
         changed=changed,
-        created=created,
+        created=alias_created,
         dry_run=config.dry_run,
         desired_enabled=desired_enabled,
         current_enabled=current_enabled,
@@ -276,9 +311,9 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         invalid_entries=feed_snapshot.invalid_count,
         feed_hash=feed_snapshot.feed_hash,
         destinations_hash=feed_snapshot.destinations_hash,
-        summary=f"alias={alias_name} enabled={desired_enabled} ips={len(desired_ips)} added={added} removed={removed}",
+        summary=f"alias={alias_name} rule={rule_description!r} enabled={desired_enabled} ips={len(desired_ips)} added={added} removed={removed}",
         is_blocked=feed_snapshot.is_blocked,
         added_destinations=added,
         removed_destinations=removed,
-        bootstrap_source="alias-created" if created else None,
+        bootstrap_source="alias-created" if alias_created else None,
     )

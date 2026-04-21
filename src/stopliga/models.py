@@ -35,6 +35,7 @@ class Config:
     opnsense_api_secret: str | None = None
     opnsense_verify_tls: bool = True
     opnsense_ca_file: Path | None = None
+    opnsense_alias_name: str | None = None
     feed_verify_tls: bool = True
     feed_ca_file: Path | None = None
     feed_allow_private_hosts: bool = False

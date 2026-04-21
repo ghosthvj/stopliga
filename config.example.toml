@@ -52,6 +52,10 @@ verify_tls = false
 # api_key = "replace-me"
 # api_secret = "replace-me"
 # verify_tls = false
+#
+# Name of the alias StopLiga creates and keeps populated with the feed IPs.
+# Defaults to route_name (from [app]) with special characters replaced by underscores.
+# alias_name = "laliga_ips"
 
 [notifications]
 # gotify_url = "https://gotify.example.com"

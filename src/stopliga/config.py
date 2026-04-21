@@ -183,6 +183,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "opnsense_api_secret": opnsense.get("api_secret"),
         "opnsense_verify_tls": opnsense.get("verify_tls"),
         "opnsense_ca_file": opnsense.get("ca_file"),
+        "opnsense_alias_name": opnsense.get("alias_name"),
         "feed_verify_tls": feeds.get("verify_tls"),
         "feed_ca_file": feeds.get("ca_file"),
         "feed_allow_private_hosts": feeds.get("allow_private_hosts"),
@@ -388,6 +389,7 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             field_name="opnsense_verify_tls",
         ),
         opnsense_ca_file=_parse_path(value, field_name="opnsense_ca_file") if (value := _first(_env_value(env, "OPNSENSE_CA_FILE"), file_cfg.get("opnsense_ca_file"))) else None,
+        opnsense_alias_name=_first(_env_value(env, "OPNSENSE_ALIAS_NAME"), file_cfg.get("opnsense_alias_name"), DEFAULTS.opnsense_alias_name),
         feed_verify_tls=_parse_bool(
             _first(_env_value(env, "STOPLIGA_FEED_VERIFY_TLS"), file_cfg.get("feed_verify_tls"), DEFAULTS.feed_verify_tls),
             field_name="feed_verify_tls",
