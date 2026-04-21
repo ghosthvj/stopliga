@@ -33,9 +33,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile
-        run: python -m py_compile run_stopliga.py src/stopliga/*.py tests/*.py
+        run: python -m compileall run_stopliga.py src tests
       - name: Unit and integration tests
-        run: PYTHONPATH=src python -m unittest tests.test_config tests.test_feed tests.test_integration -v
+        run: PYTHONPATH=src python -m unittest discover -s tests -p "test*.py" -v
 
   docker:
     runs-on: ubuntu-latest

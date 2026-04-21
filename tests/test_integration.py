@@ -1260,6 +1260,17 @@ class OPNsenseTests(unittest.TestCase):
 
         self.assertEqual(parse_alias_content(alias_record), ["192.0.2.10", "198.51.100.0/24"])
 
+    def test_parse_alias_content_accepts_string_selected_flags(self) -> None:
+        alias_record = {
+            "content": {
+                "192.0.2.10": {"value": "192.0.2.10", "selected": "1"},
+                "198.51.100.0/24": {"value": "198.51.100.0/24", "selected": "true"},
+                "OtherAlias": {"value": "OtherAlias", "selected": "0"},
+            }
+        }
+
+        self.assertEqual(parse_alias_content(alias_record), ["192.0.2.10", "198.51.100.0/24"])
+
     def test_sync_opnsense_is_idempotent_when_alias_and_rule_already_match(self) -> None:
         config = self.make_opnsense_config()
         feed_snapshot = self.make_feed_snapshot()
